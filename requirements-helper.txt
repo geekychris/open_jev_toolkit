@@ -1,0 +1,5 @@
+# What the frozen helper (shim.py) needs in front of a vLLM server; used alone when vLLM runs in Docker.
+transformers==5.17.0
+openai==3.16.2
+httpx==0.28.1
+huggingface-hub==1.32.0

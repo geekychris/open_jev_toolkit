@@ -1,7 +1,8 @@
 # OpenJev toolkit
 
-Run [OpenJev](https://huggingface.co/openjev) locally on Apple silicon, with an installer, a server
-script, a small Python client and worked examples.
+Run [OpenJev](https://huggingface.co/openjev) locally on Apple silicon (MLX) or on Linux with an
+NVIDIA GPU (vLLM, including DGX Spark), with an installer, a server script, a small Python client and
+worked examples. Both serve the same API, so everything else in this toolkit works on either.
 
 OpenJev is a **decision model**, not a chat model. You send a *state* (text, or JSON such as a log
 tail, a ticket or a DOM) and typed questions with your own labels. You get back calibrated answers
@@ -28,15 +29,17 @@ there. From a checkout, run `scripts/install.sh` directly. Pass options after `b
 curl -fsSL .../scripts/install.sh | bash -s -- --profile flash-4bit
 ```
 
-The installer:
+The installer detects the machine (Apple silicon, or Linux where `nvidia-smi` sees a GPU) and:
 - installs `uv` if it's missing;
-- builds `runtime/venv` on Python 3.12, using the MLX stack versions the model cards were validated with;
+- builds `runtime/venv` on Python 3.12, using the MLX or vLLM stack versions the model cards were validated with;
 - downloads the model at a pinned revision, plus the upstream helper (`shim.py`, whose sha256 is checked);
 - runs a self-check.
 
 Everything it creates lives under `runtime/`, which is git-ignored.
 
 ### Profiles
+
+On Apple silicon:
 
 | profile | build | disk | minimum RAM | notes |
 |---|---|---|---|---|
@@ -48,8 +51,15 @@ Everything it creates lives under `runtime/`, which is git-ignored.
 Every profile carries the calibration constants (`READOUT_T`, `READOUT_NOUL_T`) that its model card
 gives. You can install several profiles and switch between them with `serve.sh start --profile ...`.
 
-The MLX builds are **text only**: they take JSON, DOM and logs, but not screenshots. Screenshot input
-needs the full model on vLLM with an NVIDIA GPU; see `serve/SERVE.md` in `openjev/openjev`.
+On NVIDIA (see [NVIDIA GPUs](#nvidia-gpus-vllm-including-dgx-spark)):
+
+| profile | build | download | minimum GPU memory | notes |
+|---|---|---|---|---|
+| `27b-fp8` | `openjev/openjev` | 55 GB | 48 GB | default with 48 GB or more; the setup the model card's numbers were measured on |
+| `flash-fp8` | `openjev/OpenJev-Flash-9B` | 19 GB | 24 GB | default below 48 GB; the JevBench setup |
+
+The MLX builds are **text only**: they take JSON, DOM and logs, but not screenshots. The NVIDIA
+profiles also accept one image per request (`screenshot` or `image` in the state).
 
 ## Run
 
@@ -65,6 +75,58 @@ Environment variables:
 - `SHIM_TOKEN`: if set, requests must send `Authorization: Bearer <token>`. Set it before binding anything other than localhost.
 
 Endpoints: `POST /v1/systemone`, `GET /v1/version`.
+
+`scripts/serve.sh cmd` prints the exact commands `start` would run, useful for running them under
+your own supervisor (systemd, a container).
+
+## NVIDIA GPUs (vLLM, including DGX Spark)
+
+On Linux with an NVIDIA GPU, the same commands set up upstream's measured server
+(`serve/SERVE.md` in `openjev/openjev`): vLLM 0.29.0 serves the 16-bit weights with online FP8 on
+`127.0.0.1:8000`, and the same frozen helper (`shim.py`) runs in front of it on `:3000`.
+
+```bash
+scripts/install.sh                     # picks 27b-fp8 or flash-fp8 by GPU memory
+scripts/serve.sh start                 # starts vLLM, waits for it, then the helper
+scripts/serve.sh status | stop | logs  # both processes
+```
+
+Requirements: Linux, an NVIDIA driver that supports CUDA 13 (`nvidia-smi` works), and disk for the
+download. The installer installs vLLM with `uv pip --torch-backend=auto`, which picks the CUDA build
+of PyTorch matching your driver. The first `start` takes several minutes while vLLM loads, quantises
+and compiles; later starts are faster.
+
+**vLLM in Docker.** If vLLM won't install into the venv (no prebuilt wheel for your platform or CUDA
+version), run it from a container instead; the helper stays in the venv:
+
+```bash
+scripts/install.sh --vllm-image vllm/vllm-openai:v0.29.0     # needs docker + NVIDIA Container Toolkit
+scripts/serve.sh start                                       # runs the container "openjev-vllm"
+```
+
+The image is remembered in `runtime/active.env`; `VLLM_IMAGE=...` overrides it per command.
+
+**DGX Spark** (GB10, 128 GB unified memory, arm64). The installer sees that the GPU shares system
+memory (`nvidia-smi` reports no separate GPU memory) and:
+- defaults to `27b-fp8` (about 28 GB of FP8 weights in memory);
+- gives vLLM 60% of memory (`--gpu-memory-utilization 0.60`) instead of upstream's 0.90, which on a
+  unified-memory machine would leave too little for the OS and anything else you run. This only sizes
+  vLLM's KV cache; answers are unaffected. Set `VLLM_GPU_MEM` to change it.
+
+If the pip install of vLLM fails on Spark's arm64 + CUDA 13, use `--vllm-image` with NVIDIA's vLLM
+container for Spark from NGC (`nvcr.io/nvidia/vllm`), or `vllm/vllm-openai:v0.29.0` if it has an arm64
+build.
+
+Other settings (all optional):
+- `OPENJEV_VLLM_PORT` (8000): vLLM's port. It is always bound to 127.0.0.1 and has no API key; expose
+  only the helper, with `SHIM_TOKEN` set.
+- `VLLM_GPU_MEM`: vLLM's memory share (0.90; 0.60 on unified memory).
+- `VLLM_TIMEOUT` (1200): seconds to wait for vLLM to come up.
+- `VLLM_EXTRA_ARGS`: extra `vllm serve` flags, for troubleshooting. Anything beyond the memory share
+  moves you off the measured setup.
+
+Status: the scripts follow upstream's NVIDIA instructions and have been exercised against a simulated
+GPU (fake `nvidia-smi` and vLLM, real helper). They have not yet been run end to end on NVIDIA hardware.
 
 ## Use it
 
