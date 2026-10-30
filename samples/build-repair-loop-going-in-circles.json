@@ -1,0 +1,43 @@
+{
+  "name": "Build: repair loop going in circles",
+  "tags": [
+    "build"
+  ],
+  "state": {
+    "step": "verify",
+    "attempt_history": "see log",
+    "log_tail": "$ go test ./...\n--- FAIL: TestLedgerReconciliation (0.31s)\n    ledger_test.go:204: balance mismatch for account 9917: expected 0, got -0.01\n    (attempt 3 of 3 by agent: previous fixes changed rounding mode, then the test fixture, then reverted)\nFAIL"
+  },
+  "questions": {
+    "kind": {
+      "type": "choice",
+      "instructions": "What kind of failure is this?",
+      "criteria": {
+        "compile": "The code does not compile or type-check (syntax error, undefined symbol, type mismatch).",
+        "test_assertion": "Code builds, but a test ran and its assertion failed.",
+        "lint": "A linter, formatter or vet check rejected the code.",
+        "dependency": "A package or module could not be resolved, downloaded or is the wrong version.",
+        "environment": "Toolchain, permissions, disk, missing binary or misconfigured machine; not the code.",
+        "flaky_or_network": "Timeout, connection reset, rate limit or a test that fails intermittently."
+      }
+    },
+    "next": {
+      "type": "choice",
+      "instructions": "What should the build agent do next?",
+      "criteria": {
+        "retry": "Run the same step again unchanged; the failure is likely transient.",
+        "fix_code": "Send the error back to the coding agent to change the code.",
+        "fix_environment": "Repair the workspace or toolchain, then rerun.",
+        "escalate": "Stop and ask a human; the agent is unlikely to fix this alone."
+      }
+    },
+    "code_change": {
+      "type": "noul",
+      "instructions": "Was this failure caused by the code change under test, rather than the environment?"
+    }
+  },
+  "expect": {
+    "kind": "test_assertion",
+    "next": "escalate"
+  }
+}

@@ -1,0 +1,74 @@
+{
+  "name": "Browser agent: first step",
+  "tags": [
+    "agent"
+  ],
+  "state": {
+    "goal": "Subscribe to the newsletter with chris@example.com",
+    "page": {
+      "url": "https://example.com/blog",
+      "title": "Blog"
+    },
+    "elements": [
+      {
+        "index": 0,
+        "tag": "a",
+        "text": "Home"
+      },
+      {
+        "index": 1,
+        "tag": "a",
+        "text": "Pricing"
+      },
+      {
+        "index": 2,
+        "tag": "input",
+        "label": "Email address",
+        "value": ""
+      },
+      {
+        "index": 3,
+        "tag": "button",
+        "text": "Subscribe"
+      },
+      {
+        "index": 4,
+        "tag": "a",
+        "text": "Contact sales"
+      }
+    ],
+    "recent_actions": []
+  },
+  "questions": {
+    "target": {
+      "type": "choice",
+      "instructions": "Which element should the agent act on next?",
+      "criteria": {
+        "e0": "<a> Home",
+        "e1": "<a> Pricing",
+        "e2": "<input> Email address",
+        "e3": "<button> Subscribe",
+        "e4": "<a> Contact sales"
+      }
+    },
+    "op": {
+      "type": "choice",
+      "instructions": "Which operation comes next?",
+      "criteria": {
+        "click": null,
+        "type": "Enter text into a field",
+        "scroll": null,
+        "done": "The goal is achieved"
+      }
+    },
+    "done": {
+      "type": "noul",
+      "instructions": "Is the goal already achieved?"
+    }
+  },
+  "expect": {
+    "target": "e2",
+    "op": "type",
+    "done": false
+  }
+}
