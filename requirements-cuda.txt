@@ -1,0 +1,4 @@
+# Linux + NVIDIA: the versions upstream serve/SERVE.md measured with (vLLM 0.29.0, torch 2.13.0+cu130).
+# The installer adds --torch-backend=auto so uv picks the CUDA build of torch that matches the driver.
+-r requirements-helper.txt
+vllm==0.29.0
