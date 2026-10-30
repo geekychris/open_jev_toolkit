@@ -102,6 +102,7 @@ runtime/venv/bin/openjev check "Is the customer angry?" < ticket.txt
 | `04_llm_judge.py` | judging another model's answer: grounded, verdict, quality |
 | `05_agent_step.py` | a browser-agent step: which element, which operation, done or not |
 | `06_build_failure_triage.py` | classifying a failed build/test log and choosing retry, fix code, fix env or escalate; includes expected labels, so it doubles as an eval |
+| `07_cloudstack_adapter.py` | a cloud_stack-format request through the adapter (needs `scripts/cloudstack-adapter.sh start`) |
 
 Measured on an M4 Max (128 GB). The MLX stand-in runs one prefill at a time, so the questions in a
 request are serialised:
@@ -126,16 +127,49 @@ Two levers come before fine-tuning:
 - **Question decomposition.** Ask "is the agent going in circles?" as its own question rather than
   hoping a four-way `next` choice infers it from history.
 
-## Next: agentic builds (cloud_stack)
+## cloud_stack support
 
-cloud_stack already has a `jev` agent backing (`internal/agent/backing_jev.go`). Its wire format
-(questions as a list, `kind: bool`, `answers[]` with `answer`/`confidence`) is not OpenJev's
-`/v1/systemone` shape, so connecting the two needs an adapter on one side. Candidate decision points:
-- classifying verify failures to drive the repair-loop `gate`;
-- deciding progress vs escalation on repeat iterations;
-- a second-opinion risk score before `approve-risk`;
-- triage to choose the stack profile and workflow;
-- detecting whether a session turn is done instead of using `autoAdvanceDelaySeconds`.
+cloud_stack's `jev` agent backing uses its own wire format: questions as a list with
+`kind: choice|score|bool`, and answers as `[{id, answer, confidence}]`. The toolkit includes an
+adapter that speaks that format, so cloud_stack can use local OpenJev with **no code changes**:
+
+```bash
+scripts/serve.sh start                               # OpenJev API on :3000
+ADAPTER_HOST=0.0.0.0 ADAPTER_TOKEN=<secret> scripts/cloudstack-adapter.sh start   # :3010
+```
+
+Then, in cloud_stack's `.env`:
+
+```bash
+JEV_ENDPOINT=http://host.docker.internal:3010/v1/decide
+JEV_API_KEY=<secret>
+```
+
+A jev agent profile must list the adapter's `host:port` in `environment.egressAllowlist`.
+`integrations/cloudstack/verify-triage.agent.json` is a complete example: it classifies a failed
+verify log, picks retry / fix code / fix environment / escalate, and scores whether the repair loop
+is converging. `examples/07_cloudstack_adapter.py` sends that profile's request the way cloud_stack does.
+
+How OpenJev's answers map onto cloud_stack's:
+
+| kind | `answer` | `confidence` |
+|---|---|---|
+| choice | the chosen option | its probability |
+| score | the most likely level name (`ADAPTER_SCORE=number` gives the expected level index) | that level's probability |
+| bool | `p(yes) >= 0.5` | `max(p, 1-p)` |
+
+Because `confidence` is the probability of the returned answer, `minConfidence: 0.8` means "at least
+80% likely". `ADAPTER_CONFIDENCE=jev` switches to OpenJev's normalised confidence instead.
+
+Errors use the HTTP status codes cloud_stack already classifies:
+- 400: a bad question; not retried.
+- 401: a wrong token.
+- 502: OpenJev is down or failing; retried as transient.
+
+Testing:
+- `tests/test_cloudstack.py` covers the wire format.
+- The adapter was also checked live by running cloud_stack's own `JevBacking` (publish, bearer
+  token, `minConfidence`) against it.
 
 ## Licences
 

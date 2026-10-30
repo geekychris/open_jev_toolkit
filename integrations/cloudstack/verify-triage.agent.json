@@ -1,0 +1,54 @@
+{
+  "name": "agents/verify-triage",
+  "version": "1",
+  "objective": "classify a failed verify step and choose the repair loop's next move, without paying for an LLM",
+  "backing": "jev",
+  "environment": {
+    "kind": "none",
+    "egressAllowlist": ["host.docker.internal:3010"]
+  },
+  "outputs": {
+    "failure": {
+      "description": "what kind of failure the verify log shows",
+      "fields": {
+        "answer": {"type": "string", "enum": ["compile", "test_assertion", "lint", "dependency", "environment", "flaky_or_network"]},
+        "confidence": {"type": "number"}
+      }
+    },
+    "next": {
+      "description": "what the build agent should do next",
+      "fields": {
+        "answer": {"type": "string", "enum": ["retry", "fix_code", "fix_environment", "escalate"]},
+        "confidence": {"type": "number"}
+      }
+    },
+    "caused_by_change": {
+      "description": "whether the change under test caused the failure",
+      "fields": {
+        "answer": {"type": "boolean"},
+        "confidence": {"type": "number"}
+      }
+    },
+    "progress": {
+      "description": "whether repeated repair attempts are converging",
+      "fields": {
+        "answer": {"type": "string"},
+        "confidence": {"type": "number"}
+      }
+    }
+  },
+  "timeoutSeconds": 30,
+  "config": {
+    "endpoint": "http://host.docker.internal:3010/v1/decide",
+    "questions": [
+      {"ask": "What kind of failure does this verify log show?", "kind": "choice",
+       "options": ["compile", "test_assertion", "lint", "dependency", "environment", "flaky_or_network"], "into": "failure"},
+      {"ask": "What should the build agent do next: retry unchanged, fix the code, fix the environment, or escalate to a human?", "kind": "choice",
+       "options": ["retry", "fix_code", "fix_environment", "escalate"], "into": "next"},
+      {"ask": "Was this failure caused by the code change under test, rather than the environment?", "kind": "bool", "into": "caused_by_change"},
+      {"ask": "Across the attempts so far, is the repair loop making progress toward passing?", "kind": "score",
+       "levels": ["going in circles", "stalled", "slow progress", "converging"], "into": "progress"}
+    ],
+    "minConfidence": 0.6
+  }
+}
