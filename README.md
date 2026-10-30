@@ -103,9 +103,17 @@ runtime/venv/bin/openjev check "Is the customer angry?" < ticket.txt
 | `05_agent_step.py` | a browser-agent step: which element, which operation, done or not |
 | `06_build_failure_triage.py` | classifying a failed build/test log and choosing retry, fix code, fix env or escalate; includes expected labels, so it doubles as an eval |
 
-Measured on an M4 Max with `flash-4bit`: about 400 ms for three short questions in one request, and
-about 900 ms for three questions over a 10-line log. The MLX stand-in runs one prefill at a time, so
-questions within a request are serialised.
+Measured on an M4 Max (128 GB). The MLX stand-in runs one prefill at a time, so the questions in a
+request are serialised:
+
+| profile | 3 short questions (02) | 3 questions over a ~10-line log (06) | 06 next-action correct |
+|---|---|---|---|
+| `flash-4bit` | ~0.4 s | ~0.9 s | 5/7 |
+| `27b-8bit` | ~1.3 s | ~3.3 s | 6/7 |
+
+The 27B also handles cases where judgment matters: it answers "no action needed" for a thank-you
+note, "partly grounded" for a half-true answer, and "escalate" when an agent is going in circles.
+Flash is the choice for hot loops; 27B is the choice when a wrong call is expensive.
 
 ## Prompting vs fine-tuning
 
