@@ -1,0 +1,36 @@
+{
+  "name": "Ticket: missing parcel",
+  "tags": [
+    "support"
+  ],
+  "state": "The package says delivered but it's not on my porch. Can you check with the courier?",
+  "questions": {
+    "route": {
+      "type": "choice",
+      "instructions": "Which team should handle this?",
+      "criteria": {
+        "billing": null,
+        "shipping": null,
+        "technical": null,
+        "no action needed": null
+      }
+    },
+    "angry": {
+      "type": "noul",
+      "instructions": "Is the customer angry or frustrated?"
+    },
+    "urgency": {
+      "type": "score",
+      "instructions": "How urgent is this?",
+      "criteria": [
+        "can wait",
+        "this week",
+        "today",
+        "right now"
+      ]
+    }
+  },
+  "expect": {
+    "route": "shipping"
+  }
+}

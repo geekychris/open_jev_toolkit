@@ -1,0 +1,37 @@
+{
+  "name": "Ticket: double charge",
+  "tags": [
+    "support"
+  ],
+  "state": "I was charged twice for my order last week and nobody has replied.",
+  "questions": {
+    "route": {
+      "type": "choice",
+      "instructions": "Which team should handle this?",
+      "criteria": {
+        "billing": null,
+        "shipping": null,
+        "technical": null,
+        "no action needed": null
+      }
+    },
+    "angry": {
+      "type": "noul",
+      "instructions": "Is the customer angry or frustrated?"
+    },
+    "urgency": {
+      "type": "score",
+      "instructions": "How urgent is this?",
+      "criteria": [
+        "can wait",
+        "this week",
+        "today",
+        "right now"
+      ]
+    }
+  },
+  "expect": {
+    "route": "billing",
+    "angry": true
+  }
+}

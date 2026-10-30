@@ -1,0 +1,39 @@
+{
+  "name": "Judge: faithful answer",
+  "tags": [
+    "llm-judge"
+  ],
+  "state": {
+    "source": "The Model 3 heat pump was introduced in 2021. It reduces winter range loss by about 10% compared with resistive heating. It is not available on vehicles built before 2021.",
+    "answer": "The heat pump arrived in 2021 and cuts winter range loss by roughly 10% versus resistive heating."
+  },
+  "questions": {
+    "grounded": {
+      "type": "noul",
+      "instructions": "Is every claim in the answer supported by the source?"
+    },
+    "verdict": {
+      "type": "choice",
+      "instructions": "How does the answer relate to the source?",
+      "criteria": {
+        "grounded": "All claims are supported.",
+        "partly_grounded": "Some claims are supported, at least one is not.",
+        "contradicts": "At least one claim contradicts the source."
+      }
+    },
+    "quality": {
+      "type": "score",
+      "instructions": "Rate the answer's faithfulness to the source.",
+      "criteria": [
+        "poor",
+        "fair",
+        "good",
+        "excellent"
+      ]
+    }
+  },
+  "expect": {
+    "grounded": true,
+    "verdict": "grounded"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "name": "Moderation: insult",
+  "tags": [
+    "moderation"
+  ],
+  "notes": "Policy text lives in the option descriptions.",
+  "state": "You're an idiot and everyone on this forum knows it.",
+  "questions": {
+    "label": {
+      "type": "choice",
+      "instructions": "Which policy category applies to this post?",
+      "criteria": {
+        "ok": "Acceptable content.",
+        "spam": "Unsolicited promotion, links to buy things, scams.",
+        "harassment": "Insults or attacks aimed at a person.",
+        "legal_threat": "Threatens lawsuits or legal action.",
+        "personal_data": "Shares someone's phone number, address, or account details."
+      }
+    },
+    "remove": {
+      "type": "noul",
+      "instructions": "Should a moderator remove this post?"
+    }
+  },
+  "expect": {
+    "label": "harassment",
+    "remove": true
+  }
+}

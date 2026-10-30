@@ -104,6 +104,8 @@ runtime/venv/bin/openjev check "Is the customer angry?" < ticket.txt
 | `06_build_failure_triage.py` | classifying a failed build/test log and choosing retry, fix code, fix env or escalate; includes expected labels, so it doubles as an eval |
 | `07_cloudstack_adapter.py` | a cloud_stack-format request through the adapter (needs `scripts/cloudstack-adapter.sh start`) |
 
+To try your own inputs interactively, use the [playground](#playground-and-saved-samples).
+
 Measured on an M4 Max (128 GB). The MLX stand-in runs one prefill at a time, so the questions in a
 request are serialised:
 
@@ -115,6 +117,80 @@ request are serialised:
 The 27B also handles cases where judgment matters: it answers "no action needed" for a thank-you
 note, "partly grounded" for a half-true answer, and "escalate" when an agent is going in circles.
 Flash is the choice for hot loops; 27B is the choice when a wrong call is expensive.
+
+## Playground and saved samples
+
+A browser UI for trying states and questions against your local model, with every test case saved
+as a JSON file you can keep, edit and rerun.
+
+![The playground editor: state, three questions, and each answer's probabilities](docs/images/playground-editor.png)
+
+### Run it
+
+```bash
+scripts/install.sh                          # once, if you haven't already
+scripts/serve.sh start                      # the OpenJev API on :3000 (the playground calls it)
+runtime/venv/bin/openjev playground         # serves http://127.0.0.1:3020 and opens your browser
+```
+
+Options: `--port 3020`, `--samples DIR`, `--no-open`, and `--url` (before `playground`) for an OpenJev
+API somewhere other than `$OPENJEV_URL` / `http://127.0.0.1:3000`. The green dot in the header means
+the API is answering; if it's red, start it with `scripts/serve.sh start`. Stop the playground with
+Ctrl-C. It listens on 127.0.0.1 only.
+
+### Use it
+
+- **Pick a sample** on the left, filter by text or tag, or press **New** for a blank one.
+- **State** is text, or JSON (anything starting with `{` or `[` that parses), which is sent as JSON.
+  The label next to the heading says which; **Format JSON** pretty-prints it.
+- **Questions**: add a **choice**, **yes / no** or **score** question. Options go one per line, with an
+  optional description after a colon (`billing: charges, refunds, invoices`). Score levels go lowest
+  first. Yes/no questions can say what each side means (`yes: ...`, `no: ...`).
+- **Run** (⌘↩) asks every question in one request and shows the answer, confidence and the probability
+  of each option. Edits after a run dim the old results until you run again.
+- **Expected answers**: the drop-down on each question sets what the answer should be, and every run
+  marks it *as expected* or *expected X*. **Expect these answers** copies the current results in, the
+  quickest way to turn a run you agree with into a regression case.
+- **Save** (⌘S) writes `samples/<id>.json`; **Save as new** writes a copy; **Delete** removes the file.
+- **JSON** shows the whole sample for hand editing, copying, or pasting one in.
+- **Run all** runs every sample in the current (filtered) list and shows which expectations hold.
+  Click a row to open that sample.
+
+![Run all: every sample, with misses in red](docs/images/playground-run-all.png)
+
+### Sample files
+
+`samples/` starts with 21 cases taken from the examples (support tickets, moderation, LLM judging,
+browser-agent steps, build triage). Each file is the `/v1/systemone` request plus a name, tags, notes
+and `expect`:
+
+```json
+{"name": "Ticket: double charge", "tags": ["support"], "state": "I was charged twice...",
+ "questions": {"route": {"type": "choice", "instructions": "Which team?", "criteria": {"billing": null, "shipping": null}},
+               "angry": {"type": "noul", "instructions": "Is the customer angry?"}},
+ "expect": {"route": "billing", "angry": true}}
+```
+
+`expect` takes a label (choice), the most likely level (score), `true`/`false` (yes/no), or a list of
+acceptable labels. Files can be written by hand or by the playground, and committed like any other
+test fixture. Point `OPENJEV_SAMPLES` (or `--samples DIR`) at another directory to keep your own set
+elsewhere.
+
+### From the shell
+
+The same files run without the UI, for example as a regression check after switching profile or
+rewording a question:
+
+```bash
+runtime/venv/bin/openjev samples                 # list
+runtime/venv/bin/openjev run                     # run all; prints misses, exits 1 if any
+runtime/venv/bin/openjev run --tag build -v      # one tag, every answer
+runtime/venv/bin/openjev run ticket-double-charge moderation-spam
+```
+
+On `27b-8bit` the seed set matches 40 of 41 expectations (about 47 s for all 21). The miss is the npm
+peer-dependency conflict: the model answers `fix_code` where the sample expects `fix_environment`, a
+case that could reasonably go either way.
 
 ## Prompting vs fine-tuning
 
