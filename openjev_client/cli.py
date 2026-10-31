@@ -8,6 +8,8 @@
   openjev samples [--tag build]                 list saved samples
   openjev run [ID ...] [--tag build] [-v]       run samples, check expected answers (exit 1 on a miss)
   openjev playground                            browser UI for trying questions and saving samples
+  openjev bench [ID ...] [--tag t] [--levels 1,2,4,8,16,32] [--duration 15] [--json out.json]
+                                                throughput and latency as concurrency rises
 
 The state is read from --state, or stdin. --json prints the raw answer.
 Samples live in $OPENJEV_SAMPLES (default: the toolkit's samples/); --samples overrides.
@@ -65,6 +67,12 @@ def main(argv=None) -> int:
         p.add_argument("ids", nargs="*", metavar="ID", help="sample ids (file names without .json)")
         p.add_argument("--tag"); p.add_argument("--samples", help="samples directory")
         p.add_argument("-v", "--verbose", action="store_true", help="show every answer, not just misses")
+    p = sub.add_parser("bench", help="concurrency benchmark over the saved samples")
+    p.add_argument("ids", nargs="*", metavar="ID"); p.add_argument("--tag"); p.add_argument("--samples", help="samples directory")
+    p.add_argument("--levels", default="1,2,4,8,16,32", help="concurrency levels, comma separated (default 1,2,4,8,16,32)")
+    p.add_argument("--duration", type=float, default=15, help="seconds per level (default 15)")
+    p.add_argument("--reuse-cache", action="store_true", help="send samples unchanged, so a prefix cache can answer repeats")
+    p.add_argument("--json", dest="json_out", metavar="FILE", help="also write the results as JSON")
     p = sub.add_parser("playground")
     p.add_argument("--port", type=int, default=3020); p.add_argument("--samples", help="samples directory")
     p.add_argument("--no-open", action="store_true", help="don't open a browser")
@@ -79,6 +87,19 @@ def main(argv=None) -> int:
             return 0
         if a.cmd == "run":
             return run_samples(a, jev)
+        if a.cmd == "bench":
+            from . import bench
+            work = [s for s in _pick(a) if "error" not in s]
+            levels = [int(x) for x in a.levels.split(",") if x.strip()]
+            unique = not a.reuse_cache
+            print(f"{len(work)} samples, levels {levels}, {a.duration:g} s each, against {jev.url}", flush=True)
+            res = bench.run(jev, work, levels, a.duration, unique,
+                            progress=lambda r: print(f"  concurrency {r['concurrency']:>3}: {r['req_per_s']:.2f} req/s, "
+                                                     f"p50 {r['p50_ms']} ms, {r['errors']} errors", flush=True))
+            print(); print(bench.report(res, jev.url, unique))
+            if a.json_out:
+                bench.save_json(a.json_out, res, jev.url, unique, a.duration, len(work))
+            return 0
         if a.cmd == "playground":
             from .playground import serve
             serve(jev, Path(a.samples) if a.samples else S.default_dir(), a.port, open_browser=not a.no_open)

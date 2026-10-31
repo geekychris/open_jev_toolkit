@@ -166,7 +166,8 @@ runtime/venv/bin/openjev check "Is the customer angry?" < ticket.txt
 | `06_build_failure_triage.py` | classifying a failed build/test log and choosing retry, fix code, fix env or escalate; includes expected labels, so it doubles as an eval |
 | `07_cloudstack_adapter.py` | a cloud_stack-format request through the adapter (needs `scripts/cloudstack-adapter.sh start`) |
 
-To try your own inputs interactively, use the [playground](#playground-and-saved-samples).
+To try your own inputs interactively, use the [playground](#playground-and-saved-samples). To measure
+throughput under parallel load, see [Performance under concurrency](#performance-under-concurrency).
 
 Measured on an M4 Max (128 GB). The MLX stand-in runs one prefill at a time, so the questions in a
 request are serialised:
@@ -253,6 +254,41 @@ runtime/venv/bin/openjev run ticket-double-charge moderation-spam
 On `27b-8bit` the seed set matches 40 of 41 expectations (about 47 s for all 21). The miss is the npm
 peer-dependency conflict: the model answers `fix_code` where the sample expects `fix_environment`, a
 case that could reasonably go either way.
+
+## Performance under concurrency
+
+`openjev bench` sends your saved samples at rising concurrency and reports throughput and latency
+at each level, so you can see where a server saturates:
+
+```bash
+runtime/venv/bin/openjev bench                                    # concurrency 1,2,4,8,16,32; 15 s each
+runtime/venv/bin/openjev bench --levels 1,4,16,64 --duration 30 --json results.json
+runtime/venv/bin/openjev bench --tag build                        # one kind of workload
+```
+
+At each level, that many workers send requests back to back. Each request asks all of a sample's
+questions (2 or 3). The report gives requests and questions per second, the speedup over
+concurrency 1, latency percentiles and errors, plus a bar per level. By default every request gets
+a unique marker in its state, so the server sees new inputs every time; `--reuse-cache` sends the
+samples unchanged. It stops early if more than half the requests at a level fail.
+
+Measured with the 21 seed samples, from a Mac on the same LAN:
+
+| server | concurrency 1 | peak | where it peaks | latency at peak (p50) |
+|---|---|---|---|---|
+| DGX Spark, `27b-fp8` (vLLM) | 2.7 req/s, 352 ms | 4.5 req/s, 12 questions/s | concurrency 4 | 0.86 s |
+| M4 Max, `27b-8bit` (MLX) | 0.35 req/s, 2.8 s | 0.5 req/s, 1.3 questions/s | concurrency 4 | 6.1 s |
+
+On the Spark, throughput rises 1.6x from concurrency 1 to 4, then stays flat to 64 while latency
+grows in proportion (p50 14 s at 64), with no errors. The GPU is the limit: under load it runs at 96%
+utilisation and 86 W, vLLM prefills about 2,000 prompt tokens/s, and the helper and vLLM's API server
+each use under 5% of a CPU. Repeated inputs (`--reuse-cache`) measured the same; vLLM reported a 0%
+prefix-cache hit rate for these short samples. This Spark also runs a llama.cpp server on the same
+GPU; any load on it during a run would lower these numbers.
+
+The MLX server runs one prompt at a time, so more concurrency mostly adds waiting. Use it for
+development and the Spark (or any vLLM server) for parallel load. Size your callers by the peak:
+past it, more parallel requests only queue.
 
 ## Prompting vs fine-tuning
 
