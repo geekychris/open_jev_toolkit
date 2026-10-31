@@ -50,16 +50,17 @@ profile() {
       READOUT_T=1.07; READOUT_NOUL_T=1.074766;   SIZE_GB=5;  MIN_RAM_GB=16 ;;
     # NVIDIA: the 16-bit repos (they include helper/), quantised to FP8 by vLLM at load.
     # MIN_RAM_GB is GPU memory here (system memory on unified-memory machines such as DGX Spark).
+    # VLLM_NEED_GB: what vLLM needs for weights + a 16k-token KV cache; sizes it on unified memory.
     27b-fp8)
       MODEL_REPO=openjev/openjev;                MODEL_REV=1c341f65bfe5d50fdb935c71e9739c9e0938d6c4
       HELPER_REPO=$MODEL_REPO;                   HELPER_REV=$MODEL_REV
       READOUT_T=0.85; READOUT_NOUL_T=1.829074;   SIZE_GB=55; MIN_RAM_GB=48
-      BACKEND=cuda; VLLM_MAX_SEQS=256 ;;
+      BACKEND=cuda; VLLM_MAX_SEQS=256; VLLM_NEED_GB=40 ;;
     flash-fp8)
       MODEL_REPO=openjev/OpenJev-Flash-9B;       MODEL_REV=b77b0fff67c77a76c16d4da50a66d2fdbc124fae
       HELPER_REPO=$MODEL_REPO;                   HELPER_REV=$MODEL_REV
       READOUT_T=1.07; READOUT_NOUL_T=1.074766;   SIZE_GB=19; MIN_RAM_GB=24
-      BACKEND=cuda; VLLM_MAX_SEQS=16 ;;
+      BACKEND=cuda; VLLM_MAX_SEQS=16; VLLM_NEED_GB=16 ;;
     *) echo "unknown profile '$1' (choose from: $(profiles_for "$PLATFORM"))" >&2; return 1 ;;
   esac
   MODEL_DIR="$MODELS_DIR/${MODEL_REPO#openjev/}"
@@ -109,6 +110,26 @@ default_profile() {
 
 # Read one KEY=value from runtime/active.env (written by the installer).
 active_get() { [ -f "$ACTIVE_ENV" ] && (. "$ACTIVE_ENV"; eval "echo \${$1:-}") || true; }
+
+# Set KEY=value in runtime/active.env, keeping the other lines. The file can hold SHIM_TOKEN: 0600.
+active_set() {
+  mkdir -p "$RUNTIME"; touch "$ACTIVE_ENV"; chmod 600 "$ACTIVE_ENV"
+  local tmp="$ACTIVE_ENV.tmp"
+  grep -v "^$1=" "$ACTIVE_ENV" > "$tmp" || true
+  if [ -n "$2" ]; then echo "$1=$2" >> "$tmp"; fi
+  chmod 600 "$tmp"; mv "$tmp" "$ACTIVE_ENV"
+}
+
+# Saved settings (port, listen address, token, vLLM options) apply unless the environment sets them.
+load_active_env() {
+  [ -f "$ACTIVE_ENV" ] || return 0
+  local k v
+  while IFS='=' read -r k v; do
+    case "$k" in ''|\#*) continue ;; esac
+    [ -n "${!k+x}" ] || export "$k=$v"
+  done < "$ACTIVE_ENV"
+}
+load_active_env
 
 # The profile chosen at install time (or the memory-based default).
 active_profile() {

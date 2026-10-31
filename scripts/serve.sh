@@ -7,11 +7,15 @@
 #   scripts/serve.sh fg [--profile P] [--port N]      run in the foreground (NVIDIA: vLLM still in the background)
 #   scripts/serve.sh selfcheck [--profile P]          score one fixed question
 #   scripts/serve.sh cmd [--profile P]                print the commands start would run
+#   scripts/serve.sh health                           exit 0 if the API answers
 #
 # Env: OPENJEV_PORT (3000), OPENJEV_HOST (127.0.0.1), SHIM_TOKEN (require a bearer token).
+# Any of these can be saved in runtime/active.env (install.sh --port/--listen does that); the
+# environment wins over the file.
 # NVIDIA only:
 #   OPENJEV_VLLM_PORT (8000)  vLLM's port; always bound to 127.0.0.1
-#   VLLM_GPU_MEM              --gpu-memory-utilization (0.90; 0.60 on unified-memory GPUs such as DGX Spark)
+#   VLLM_GPU_MEM              --gpu-memory-utilization (0.90; on unified-memory GPUs such as DGX Spark,
+#                             sized at start from the memory actually available)
 #   VLLM_IMAGE                run vLLM from this Docker image (default: the one given to install.sh, if any)
 #   VLLM_EXTRA_ARGS           extra vllm serve flags (changes what was measured; for troubleshooting)
 #   VLLM_TIMEOUT              seconds to wait for vLLM to load (1200)
@@ -32,12 +36,14 @@ profile "$PROFILE" || exit 1
 
 VLLM_PORT="${OPENJEV_VLLM_PORT:-8000}"
 IMAGE="${VLLM_IMAGE:-$(active_get OPENJEV_VLLM_IMAGE)}"
-if [ -z "${VLLM_GPU_MEM:-}" ]; then
-  if [ "$BACKEND" = cuda ] && [ -z "$(gpu_mem_gb)" ]; then VLLM_GPU_MEM=0.60; else VLLM_GPU_MEM=0.90; fi
-fi
+UNIFIED=0; if [ "$BACKEND" = cuda ] && [ -z "$(gpu_mem_gb)" ]; then UNIFIED=1; fi
+VLLM_GPU_MEM="${VLLM_GPU_MEM:-}"
 
 # Where to probe the helper: the bind address, or loopback when it binds every interface.
 PROBE="$HOST"; [ "$HOST" = 0.0.0.0 ] && PROBE=127.0.0.1
+
+# GET the helper's /v1/version (with the token when one is set).
+version() { curl -fs ${SHIM_TOKEN:+-H "Authorization: Bearer $SHIM_TOKEN"} "http://$PROBE:$PORT/v1/version"; }
 
 running() { [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; }
 
@@ -82,8 +88,53 @@ docker_cmd() {
     -v "$MODEL_DIR:/model:ro" --entrypoint vllm "$IMAGE")
 }
 
+meminfo_gb() { awk -v k="$1:" '$1==k{print int($2/1048576)}' /proc/meminfo; }
+
+# The share of memory vLLM may take. On a discrete GPU, upstream's 0.90. On unified memory (DGX Spark)
+# the GPU shares RAM with everything else, so: what is available now minus headroom, at most 0.60,
+# and at least what the profile needs.
+size_vllm_memory() {
+  [ -n "$VLLM_GPU_MEM" ] && return 0
+  if [ "$UNIFIED" = 0 ]; then VLLM_GPU_MEM=0.90; return 0; fi
+  local total avail budget headroom="${VLLM_HEADROOM_GB:-12}"
+  total=$(meminfo_gb MemTotal); avail=$(meminfo_gb MemAvailable)
+  budget=$(( avail - headroom ))
+  if [ "$budget" -gt $(( total * 60 / 100 )) ]; then budget=$(( total * 60 / 100 )); fi
+  [ "$budget" -ge "$VLLM_NEED_GB" ] || die "$PROFILE needs ~${VLLM_NEED_GB} GB for vLLM; ${avail} GB of ${total} GB is available (keeping ${headroom} GB headroom). Free memory, or use --profile flash-fp8."
+  VLLM_GPU_MEM=$(awk -v b="$budget" -v t="$total" 'BEGIN{printf "%.2f", b/t}')
+  say "unified memory: ${avail} GB available of ${total} GB; vLLM gets ${budget} GB (--gpu-memory-utilization $VLLM_GPU_MEM)"
+}
+
+# On unified memory CUDA counts only free pages, not reclaimable file cache, and vLLM refuses to
+# start when its share exceeds CUDA's free figure. Allocating memory briefly makes the kernel drop
+# clean cache pages (the same effect as drop_caches, without root).
+reclaim_cache() {
+  [ "$UNIFIED" = 1 ] || return 0
+  local want free
+  want=$(awk -v g="$VLLM_GPU_MEM" -v t="$(meminfo_gb MemTotal)" 'BEGIN{printf "%d", g*t + 3}')
+  free=$(meminfo_gb MemFree)
+  [ "$free" -ge "$want" ] && return 0
+  say "freeing page cache: ${free} GB free, vLLM needs ${want} GB"
+  "$PY" - "$want" <<'EOF'
+import sys
+want = int(sys.argv[1])
+def gb(k):
+    for line in open("/proc/meminfo"):
+        if line.startswith(k + ":"):
+            return int(line.split()[1]) // 1048576
+hold = []
+# Grow in 1 GB steps until enough is free; stop well short of what is available so nothing is pushed to swap.
+while gb("MemFree") < want and gb("MemAvailable") > 6:
+    hold.append(bytearray(1 << 30))
+del hold
+EOF
+  say "now $(meminfo_gb MemFree) GB free"
+}
+
 start_vllm() {
   vllm_running && { say "vLLM already running on 127.0.0.1:$VLLM_PORT"; return 0; }
+  size_vllm_memory
+  reclaim_cache
   if [ -n "$IMAGE" ]; then
     vllm_args /model; docker_cmd
     docker rm -f "$VLLM_CONTAINER" >/dev/null 2>&1 || true
@@ -127,7 +178,7 @@ vllm_note() { [ "$BACKEND" = cuda ] && echo " (vLLM stays loaded; scripts/serve.
 
 wait_ready() {
   for _ in $(seq 1 180); do
-    curl -fs "http://$PROBE:$PORT/v1/version" >/dev/null 2>&1 && return 0
+    version >/dev/null 2>&1 && return 0
     running || { tail -20 "$LOG_FILE" >&2; die "server exited during startup$(vllm_note)"; }
     sleep 1
   done
@@ -142,7 +193,7 @@ start_helper() {
   nohup "$PY" "${HELPER_ARGS[@]}" --host "$HOST" --port "$PORT" >"$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"
   wait_ready
-  say "ready: $(curl -fs "http://$PROBE:$PORT/v1/version")"
+  say "ready: $(version)"
 }
 
 stop_all() {
@@ -155,6 +206,8 @@ case "$CMD" in
   start) start_helper ;;
   fg)
     helper_cmd; [ "$BACKEND" = cuda ] && start_vllm
+    echo $$ > "$PID_FILE"   # exec keeps this pid, so status and stop see the foreground helper
+    say "helper on http://$HOST:$PORT${SHIM_TOKEN:+ (bearer token required)}"
     exec "$PY" "${HELPER_ARGS[@]}" --host "$HOST" --port "$PORT" ;;
   selfcheck)
     if [ "$BACKEND" = mlx ]; then helper_cmd; exec "$PY" "${HELPER_ARGS[@]}" --selfcheck; fi
@@ -173,6 +226,8 @@ EOF
   cmd)
     helper_cmd
     if [ "$BACKEND" = cuda ]; then
+      if [ "$UNIFIED" = 1 ] && [ -r /proc/meminfo ]; then size_vllm_memory >&2; fi
+      VLLM_GPU_MEM="${VLLM_GPU_MEM:-0.90}"
       if [ -n "$IMAGE" ]; then vllm_args /model; docker_cmd; printf '%q ' docker "${DOCKER_ARGS[@]}" "${VLLM_ARGS[@]}"
       else vllm_args "$MODEL_DIR"; printf '%q ' "$VENV/bin/vllm" "${VLLM_ARGS[@]}"; fi
       echo; echo
@@ -181,6 +236,7 @@ EOF
     printf '%s ' TOKENIZER="$TOKENIZER" SHIM_MODEL="$SHIM_MODEL" READOUT_T="$READOUT_T" READOUT_NOUL_T="$READOUT_NOUL_T" \
       READOUT_NOUL_BIAS=0 READOUT_TARGETED=1 READOUT_INSTR_STYLE=pyrepr SHIM_STAGGER=1
     printf '%q ' "$PY" "${HELPER_ARGS[@]}" --host "$HOST" --port "$PORT"; echo ;;
+  health) version >/dev/null 2>&1 ;;
   stop) stop_all ;;
   restart)
     "$0" stop --profile "$PROFILE"; "$0" start --profile "$PROFILE" --port "$PORT" ;;
@@ -188,10 +244,10 @@ EOF
     if [ "$BACKEND" = cuda ]; then
       if vllm_running; then say "vLLM running on 127.0.0.1:$VLLM_PORT${IMAGE:+ (container $VLLM_CONTAINER)}"; else say "vLLM not running"; fi
     fi
-    if running; then say "running (pid $(cat "$PID_FILE")), profile $PROFILE"; curl -fs "http://$PROBE:$PORT/v1/version" && echo
+    if running; then say "running (pid $(cat "$PID_FILE")), profile $PROFILE"; version && echo
     else say "not running (profile $PROFILE)"; fi ;;
   logs)
     if [ "$BACKEND" = cuda ]; then say "helper log: $LOG_FILE; vLLM log: $(vllm_log_hint)"; fi
     tail -f "$LOG_FILE" ;;
-  *) die "usage: serve.sh start|stop|restart|status|logs|fg|selfcheck|cmd" ;;
+  *) die "usage: serve.sh start|stop|restart|status|logs|fg|selfcheck|cmd|health" ;;
 esac

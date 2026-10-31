@@ -15,6 +15,9 @@
 #                      NVIDIA:        27b-fp8 | flash-fp8          (default: by memory)
 #   --vllm-image IMG   NVIDIA: run vLLM from this Docker image instead of installing it in the venv
 #                      (e.g. vllm/vllm-openai:v0.29.0, or an NGC vLLM image on DGX Spark)
+#   --port N           port for the API (saved in runtime/active.env; default 3000)
+#   --listen ADDR      address to bind (default 127.0.0.1). Anything else, e.g. 0.0.0.0, also
+#                      generates a bearer token (SHIM_TOKEN in runtime/active.env) unless one is saved
 #   --no-download      set up the venv only
 #   --no-check         skip the self-check
 set -euo pipefail
@@ -36,14 +39,16 @@ fi
 
 . "$SELF_DIR/lib.sh"
 
-PROFILE=""; DOWNLOAD=1; CHECK=1; IMAGE="${VLLM_IMAGE:-}"
+PROFILE=""; DOWNLOAD=1; CHECK=1; IMAGE="${VLLM_IMAGE:-}"; SET_PORT=""; SET_HOST=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --profile) PROFILE="$2"; shift 2 ;;
     --vllm-image) IMAGE="$2"; shift 2 ;;
+    --port) SET_PORT="$2"; shift 2 ;;
+    --listen) SET_HOST="$2"; shift 2 ;;
     --no-download) DOWNLOAD=0; shift ;;
     --no-check) CHECK=0; shift ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
     *) die "unknown option $1" ;;
   esac
 done
@@ -105,9 +110,19 @@ if [ "$DOWNLOAD" = 1 ]; then
   [ "$SHA" = "$HELPER_SHA_PREFIX" ] || die "helper/shim.py hash $SHA is not the frozen $HELPER_SHA_PREFIX"
 fi
 
-echo "OPENJEV_PROFILE=$PROFILE" > "$ACTIVE_ENV"
-if [ -n "$IMAGE" ]; then echo "OPENJEV_VLLM_IMAGE=$IMAGE" >> "$ACTIVE_ENV"; fi
-say "active profile: $PROFILE (runtime/active.env)"
+active_set OPENJEV_PROFILE "$PROFILE"
+active_set OPENJEV_VLLM_IMAGE "$IMAGE"
+if [ -n "$SET_PORT" ]; then active_set OPENJEV_PORT "$SET_PORT"; export OPENJEV_PORT="$SET_PORT"; fi
+if [ -n "$SET_HOST" ]; then active_set OPENJEV_HOST "$SET_HOST"; export OPENJEV_HOST="$SET_HOST"; fi
+case "$(active_get OPENJEV_HOST)" in
+  ''|127.0.0.1|localhost) ;;
+  *) if [ -z "$(active_get SHIM_TOKEN)" ]; then
+       active_set SHIM_TOKEN "$("$PY" -c 'import secrets; print(secrets.token_hex(24))')"
+       say "generated a bearer token (SHIM_TOKEN in $ACTIVE_ENV)"
+     fi
+     export SHIM_TOKEN; SHIM_TOKEN=$(active_get SHIM_TOKEN) ;;
+esac
+say "active profile: $PROFILE; settings in $ACTIVE_ENV"
 
 # 3. Self-check: loads the model and scores one fixed question (MLX: in-process; NVIDIA: through
 #    a temporary vLLM + helper, which takes a few minutes the first time)
