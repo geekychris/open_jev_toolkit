@@ -76,7 +76,17 @@ if ! command -v uv >/dev/null; then
   export PATH="$HOME/.local/bin:$PATH"
 fi
 mkdir -p "$RUNTIME" "$MODELS_DIR" "$HELPERS_DIR"
-[ -x "$PY" ] || { say "creating $VENV"; uv venv "$VENV" --python 3.12 -q; }
+# On NVIDIA, Triton compiles a small C helper at startup and needs Python.h, which distro Pythons
+# often leave out (python3.12-dev); uv's own Python always has it. Rebuild a venv that lacks it.
+has_headers() { "$PY" -c 'import os, sysconfig; raise SystemExit(not os.path.exists(os.path.join(sysconfig.get_paths()["include"], "Python.h")))' 2>/dev/null; }
+if [ -x "$PY" ] && [ "$PLATFORM" = cuda ] && ! has_headers; then
+  say "rebuilding $VENV: its Python has no development headers"; rm -rf "$VENV"
+fi
+if [ ! -x "$PY" ]; then
+  say "creating $VENV"
+  if [ "$PLATFORM" = cuda ]; then uv venv "$VENV" --python 3.12 --python-preference only-managed -q
+  else uv venv "$VENV" --python 3.12 -q; fi
+fi
 if [ "$PLATFORM" = mlx ]; then
   say "installing pinned MLX stack + toolkit client"
   uv pip install -q --python "$PY" -r "$TOOLKIT_HOME/requirements.txt"

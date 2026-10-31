@@ -16,13 +16,18 @@ UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 command -v systemctl >/dev/null || die "systemd not found; use scripts/serve.sh start instead"
 sc() { systemctl --user "$@"; }
 
+restarts() { sc show -p NRestarts --value "$UNIT" 2>/dev/null || echo 0; }
+
 wait_healthy() {
-  local t=0 limit=$(( ${VLLM_TIMEOUT:-1200} + 300 ))
+  local t=0 limit=$(( ${VLLM_TIMEOUT:-1200} + 300 )) r0; r0=$(restarts)
   say "waiting for the API (first start loads the model; can take several minutes)"
   until "$TOOLKIT_HOME/scripts/serve.sh" health; do
-    if sc is-failed -q "$UNIT"; then
+    # A crash shows up as an automatic restart (Restart=on-failure), not as a failed unit.
+    if sc is-failed -q "$UNIT" || [ "$(restarts)" != "$r0" ]; then
+      tail -30 "$VLLM_LOG_FILE" >&2 2>/dev/null || true
       journalctl --user -u "$UNIT" -n 30 --no-pager >&2 || true
-      die "service failed; see: scripts/service.sh logs"
+      sc stop "$UNIT" || true
+      die "service failed and was stopped; fix the cause, then: scripts/service.sh start"
     fi
     [ "$t" -ge "$limit" ] && die "not ready after ${limit}s; see: scripts/service.sh logs"
     sleep 10; t=$((t + 10))
