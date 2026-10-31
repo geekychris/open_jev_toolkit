@@ -307,7 +307,17 @@ the git checkout, so later deploys can update it. `OPENJEV_SAMPLES` changes that
 
 ![Run all: every sample, with misses in red](docs/images/playground-run-all.png)
 
-![Throughput test against the DGX Spark: throughput peaks at concurrency 4 while latency keeps rising](docs/images/playground-throughput.png)
+Screenshots from the playground running on the DGX Spark (`http://spark.local:3020`, debug mode),
+in front of `27b-fp8`:
+
+![Run all, four at a time: 22 samples in 4.8 s](docs/images/playground-run-all-parallel.png)
+
+![Throughput test mid-run: levels 1, 2 and 4 done, concurrency 8 running](docs/images/playground-throughput-running.png)
+
+![Throughput test finished: throughput flat at 4.3-4.6 req/s from concurrency 4 to 32 while p50 latency rises to 6.7 s](docs/images/playground-throughput.png)
+
+`node docs/screenshots.mjs docs/images http://spark.local:3020/` regenerates these three from a
+live playground (it runs a full throughput test, about 70 s).
 
 ### Sample files
 
@@ -375,9 +385,47 @@ each use under 5% of a CPU. Repeated inputs (`--reuse-cache`) measured the same;
 prefix-cache hit rate for these short samples. This Spark also runs a llama.cpp server on the same
 GPU; any load on it during a run would lower these numbers.
 
+The playground's Throughput test on the Spark gives the same shape (screenshots above): 2.7 req/s
+at concurrency 1, then 4.3-4.6 req/s from 4 to 32 while p50 latency goes from 0.38 s to 6.7 s.
+
 The MLX server runs one prompt at a time, so more concurrency mostly adds waiting. Use it for
 development and the Spark (or any vLLM server) for parallel load. Size your callers by the peak:
 past it, more parallel requests only queue.
+
+### Batching, queues and the prompt cache
+
+OpenJev batches at two levels already:
+- **In the API:** one request carries one state and any number of questions, and the helper sends a
+  request's questions to vLLM in parallel (up to 16 in flight, `SHIM_POOL`). Asking several
+  questions about the same input in one request is the API's batching.
+- **On the GPU:** vLLM batches continuously, merging whatever requests are in flight into the same
+  GPU steps. That is where the 1.6x gain from concurrency 1 to 4 comes from.
+
+A queue in front of the service that groups requests into batches would not add throughput on the
+Spark. vLLM already merges concurrent requests, the GPU is at 96% from concurrency 4 up, and OpenJev
+requests produce a single output token, so nearly all the work is reading the prompt (prefill).
+Prefill costs about the same GPU work per token batched or not; batching pays off when generating
+long outputs, which OpenJev doesn't do. A queue is still useful to **bound latency**: cap requests
+in flight at about 4-8 (past the peak, extra requests only wait), absorb bursts, and reject or
+prioritise work.
+
+**The prompt cache doesn't help short states.** The helper puts the state first (`State: ...`, then
+the question), so a request's questions share a prefix. But OpenJev (Qwen3.5) mixes attention layers
+with linear-attention (Gated DeltaNet) layers, and for that kind of model vLLM caches prefixes only
+in whole blocks of 784 tokens (`Setting attention block size to 784 tokens` in `runtime/vllm.log`).
+The seed samples are about 150-300 tokens, so vLLM counted 0 cache hits in 605,303 prompt tokens,
+even when the same samples repeated. States longer than a block (log tails, page DOMs) should reuse
+the state across a request's questions; that hasn't been measured here. `SHIM_STAGGER=1` (set by
+`serve.sh`) runs the first question of a long state (16,000+ characters) alone so the others hit
+its cache.
+
+What would raise throughput, cheapest first:
+1. `flash-fp8` (9B): about a third of the compute per token, for 1-3 points of accuracy.
+2. Fewer prompt tokens: shorter option descriptions and trimmed states; cost is close to linear in
+   prompt length.
+3. For long states, ask all questions in one request, so the cache can reuse the state.
+4. A GPU of its own (the Spark's is shared with a llama.cpp server), or a second machine behind a
+   load balancer.
 
 ## Prompting vs fine-tuning
 
