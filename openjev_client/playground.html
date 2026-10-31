@@ -50,6 +50,7 @@ aside { border-right: 1px solid var(--line); display: flex; flex-direction: colu
 aside .tools { padding: 10px; display: grid; gap: 8px; border-bottom: 1px solid var(--line); }
 aside .row { display: flex; gap: 6px; }
 aside .row button { flex: 1; }
+aside .row select { width: auto; flex: none; }
 .tags { display: flex; flex-wrap: wrap; gap: 4px; }
 .tag { font-size: 11.5px; padding: 1px 7px; border-radius: 10px; border: 1px solid var(--line); color: var(--muted); cursor: pointer; background: none; }
 .tag.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
@@ -95,7 +96,7 @@ h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: v
 table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { color: var(--muted); font-weight: 600; }
-td.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 tr.click { cursor: pointer; } tr.click:hover { background: var(--bg); }
 .a { display: inline-block; margin: 0 10px 2px 0; }
 .a.bad { color: var(--bad); font-weight: 600; } .a.ok { color: var(--ok); }
@@ -104,12 +105,29 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 dialog textarea { height: 60vh; }
 .toast { position: fixed; bottom: 16px; right: 16px; background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
 .toast.show { opacity: 1; }
+.charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.chart h3 { font-size: 13px; margin: 0 0 2px; } .chart .sub { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+.chart svg { width: 100%; height: auto; display: block; overflow: visible; }
+.chart svg text { fill: var(--muted); font-size: 11px; font-family: inherit; }
+.chart svg .grid { stroke: var(--line); stroke-width: 1; }
+.chart svg .base { stroke: var(--muted); stroke-width: 1; }
+.chart svg .bar { fill: var(--accent); }
+.chart svg .hit { fill: transparent; cursor: default; }
+.chart svg .hit:hover + .bar, .chart svg .bar.hover { opacity: .8; }
+.chart svg text.val { fill: var(--ink); font-weight: 600; }
+.chartempty { padding: 40px 0; text-align: center; }
+.benchform { display: grid; grid-template-columns: 2fr 1fr auto auto; gap: 10px; align-items: end; }
+.benchform label.check { display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--ink); padding-bottom: 6px; white-space: nowrap; }
+.benchform label.check input { width: auto; }
+.live { font-variant-numeric: tabular-nums; }
+.peak { font-size: 14px; } .peak b { font-size: 16px; }
+#tip { position: fixed; pointer-events: none; background: var(--ink); color: var(--bg); font-size: 12px; padding: 6px 9px; border-radius: 6px; white-space: pre; z-index: 10; display: none; line-height: 1.4; }
 kbd { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; color: var(--muted); }
 @media (max-width: 820px) {
   .layout { grid-template-columns: 1fr; height: auto; }
   aside { max-height: 40vh; border-right: 0; border-bottom: 1px solid var(--line); }
   main { padding: 14px 16px 60px; }
-  .q, .meta { grid-template-columns: 1fr; }
+  .q, .meta, .charts, .benchform { grid-template-columns: 1fr; }
   .q .head { grid-template-columns: 1fr 1fr; }
   header { flex-wrap: wrap; }
 }
@@ -126,7 +144,9 @@ kbd { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; paddin
 <div class="layout">
   <aside>
     <div class="tools">
-      <div class="row"><button class="primary" id="new">New</button><button id="runall" title="Run every sample in the list below">Run all</button></div>
+      <div class="row"><button class="primary" id="new">New</button><button id="runall" title="Run every sample in the list below">Run all</button>
+        <select id="par" title="How many samples Run all sends at once" aria-label="Run all parallelism"><option value="1">×1</option><option value="2">×2</option><option value="4" selected>×4</option><option value="6">×6</option></select></div>
+      <button id="benchbtn" title="Ramp up concurrency and chart throughput and latency">Throughput test</button>
       <input id="search" placeholder="Filter samples">
       <div class="tags" id="tagbar"></div>
     </div>
@@ -141,6 +161,7 @@ kbd { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; paddin
   <div class="bar-row" style="margin-top:10px"><div class="spacer"></div><button id="jsoncopy">Copy</button><button id="jsoncancel">Cancel</button><button class="primary" id="jsonapply">Apply</button></div>
 </dialog>
 <div class="toast" id="toast"></div>
+<div id="tip" role="tooltip"></div>
 <script>
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -229,6 +250,7 @@ async function reload() { samples = await api("GET", "/api/samples"); renderList
 /* ---------- editor ---------- */
 function render() {
   if (view === "eval") return renderEval();
+  if (view === "bench") return renderBench();
   if (!cur) { $("#main").innerHTML = `<div class="card hint">Pick a sample on the left, or press <b>New</b>.</div>`; return; }
   const st = parseState(stateText(cur.state));
   $("#main").innerHTML = `
@@ -427,23 +449,32 @@ $("#runall").onclick = async () => {
   if (view === "edit" && !confirmLeave()) return;
   const list = visibleSamples().filter(s => !s.error);
   if (!list.length) return;
-  view = "eval"; dirty = false; evalRows = list.map(s => ({ s, r: null, err: null })); renderEval();
+  view = "eval"; dirty = false; evalRows = list.map(s => ({ s, r: null, err: null }));
+  evalPar = +$("#par").value; evalStart = performance.now(); evalEnd = null; renderEval();
   $("#runall").disabled = true;
-  for (const row of evalRows) {
-    if (view !== "eval") break;
-    try { row.r = await api("POST", "/api/run", row.s); lastRun[row.s.id] = row.r; }
-    catch (e) { row.err = e.message; }
-    renderEval(); renderList();
-  }
+  // evalPar workers take the next sample as each finishes (browsers allow ~6 connections per host).
+  let next = 0;
+  const worker = async () => {
+    while (next < evalRows.length && view === "eval") {
+      const row = evalRows[next++];
+      try { row.r = await api("POST", "/api/run", row.s); lastRun[row.s.id] = row.r; }
+      catch (e) { row.err = e.message; }
+      if (view === "eval") renderEval();
+      renderList();
+    }
+  };
+  await Promise.all(Array.from({ length: evalPar }, worker));
+  evalEnd = performance.now(); if (view === "eval") renderEval();
   $("#runall").disabled = false;
 };
+let evalPar = 1, evalStart = 0, evalEnd = null;
 function renderEval() {
   const done = evalRows.filter(r => r.r || r.err);
   const passed = done.reduce((n, r) => n + (r.r?.passed || 0), 0), checked = done.reduce((n, r) => n + (r.r?.checked || 0), 0);
-  const ms = done.reduce((n, r) => n + (r.r?.elapsed_ms || 0), 0);
+  const wall = ((evalEnd ?? performance.now()) - evalStart) / 1000;
   const failing = done.filter(r => r.err || (r.r && r.r.passed < r.r.checked)).length;
   $("#main").innerHTML = `
-    <div class="stickybar"><span class="t">Run all: ${done.length}/${evalRows.length} samples · ${passed}/${checked} expected answers matched · ${failing} sample${failing === 1 ? "" : "s"} with misses · ${(ms / 1000).toFixed(1)} s</span></div>
+    <div class="stickybar"><span class="t">Run all ×${evalPar}: ${done.length}/${evalRows.length} samples · ${passed}/${checked} expected answers matched · ${failing} sample${failing === 1 ? "" : "s"} with misses · ${wall.toFixed(1)} s · ${(done.length / Math.max(wall, 0.001)).toFixed(2)} samples/s</span></div>
     <div class="card"><table>
       <thead><tr><th>Sample</th><th>Answers</th><th style="text-align:right">ms</th></tr></thead>
       <tbody>${evalRows.map(({ s, r, err }) => `<tr class="click" data-id="${esc(s.id)}">
@@ -455,6 +486,108 @@ function renderEval() {
   $("#main").oninput = $("#main").onchange = null;
 }
 function short(a) { return a.type === "noul" ? (a.p >= 0.5 ? "yes" : "no") + " " + a.p.toFixed(2) : `${a.choice} ${a.confidence?.toFixed(2)}`; }
+
+/* ---------- throughput test ---------- */
+// The run itself happens on the playground server (bench.py): the browser only starts it, polls it and
+// draws it, so its own ~6-connection limit doesn't cap the concurrency.
+let benchJob = null, benchTimer = null, benchCfg = { levels: "1,2,4,8,16,32", duration: 10, unique: true }, benchCfgSet = false;
+$("#benchbtn").onclick = () => {
+  if (view === "edit" && !confirmLeave()) return;
+  view = "bench"; dirty = false; renderList(); pollBench();
+};
+async function pollBench() {
+  try { benchJob = await api("GET", "/api/bench"); } catch (e) { benchJob = { results: [], error: e.message }; }
+  clearTimeout(benchTimer);
+  // Show the settings of the server's current or last run (it may have been started from another page).
+  if (!benchCfgSet && benchJob.levels?.length) {
+    benchCfg = { levels: benchJob.levels.join(","), duration: benchJob.duration, unique: benchJob.unique }; benchCfgSet = true;
+  }
+  if (view !== "bench") return;
+  renderBench();
+  if (benchJob.running) benchTimer = setTimeout(pollBench, 1000);
+}
+async function startBench() {
+  benchCfg = { levels: $("#b-levels").value, duration: +$("#b-dur").value, unique: $("#b-unique").checked }; benchCfgSet = true;
+  const levels = benchCfg.levels.split(",").map(x => parseInt(x, 10)).filter(x => x > 0);
+  const ids = visibleSamples().filter(s => !s.error).map(s => s.id);
+  try { await api("POST", "/api/bench", { levels, duration: benchCfg.duration, unique: benchCfg.unique, ids }); }
+  catch (e) { benchJob = { ...(benchJob || { results: [] }), running: false, error: e.message }; renderBench(); return; }
+  pollBench();
+}
+function renderBench() {
+  const j = benchJob || { results: [] }, res = j.results || [], live = j.live || {}, running = !!j.running;
+  const n = visibleSamples().filter(s => !s.error).length;
+  let status = "";
+  if (running && live.concurrency) {
+    const el = Math.max(0.001, Date.now() / 1000 - live.started);
+    status = `Running concurrency <b>${live.concurrency}</b> (level ${res.length + 1} of ${j.levels.length}): ${live.done} requests, ` +
+      `${(live.done / el).toFixed(2)} req/s so far, ${Math.max(0, Math.ceil(live.duration - el))} s left${live.errors ? ` · <span class="a bad">${live.errors} errors</span>` : ""}`;
+  } else if (running) status = "Warming up…";
+  else if (res.length) status = `${j.stopped ? "Stopped" : "Finished"}: ${res.length} level${res.length === 1 ? "" : "s"} over ${j.samples} samples, ${j.unique ? "unique inputs" : "repeated inputs"}`;
+  const base = res[0]?.req_per_s, best = res.reduce((b, r) => (!b || r.req_per_s > b.req_per_s ? r : b), null);
+  const tip = r => `concurrency ${r.concurrency}\n${r.req_per_s.toFixed(2)} req/s · ${r.q_per_s.toFixed(2)} questions/s\np50 ${r.p50_ms} ms · p95 ${r.p95_ms} ms\n${r.requests} requests, ${r.errors} errors`;
+  $("#main").innerHTML = `
+    <div class="card">
+      <h2>Throughput test</h2>
+      <div class="benchform">
+        <label class="f">Concurrency levels<input id="b-levels" value="${esc(benchCfg.levels)}" ${running ? "disabled" : ""}></label>
+        <label class="f">Seconds per level<input id="b-dur" type="number" min="2" max="120" value="${benchCfg.duration}" ${running ? "disabled" : ""}></label>
+        <label class="check" title="Mark every request so the server's prompt cache can't answer repeats"><input type="checkbox" id="b-unique" ${benchCfg.unique ? "checked" : ""} ${running ? "disabled" : ""}> unique inputs</label>
+        ${running ? `<button class="danger" id="b-stop">Stop</button>` : `<button class="primary" id="b-start">Start</button>`}
+      </div>
+      <p class="hint" style="margin:10px 0 0">Sends the ${n} sample${n === 1 ? "" : "s"} in the list on the left (narrow it with the filter or tags). At each level, that many requests
+        run at once, back to back, for the time given. The run happens on the playground server and keeps the model busy while it lasts.</p>
+    </div>
+    ${j.error ? `<div class="err">${esc(j.error)}</div>` : ""}
+    ${status ? `<div class="live">${status}</div>` : ""}
+    ${best && base ? `<div class="peak">Peak <b>${best.req_per_s.toFixed(2)} req/s</b> (${best.q_per_s.toFixed(2)} questions/s) at concurrency <b>${best.concurrency}</b>,
+      ${(best.req_per_s / base).toFixed(1)}× concurrency ${res[0].concurrency}; p50 latency there ${best.p50_ms} ms.</div>` : ""}
+    <div class="charts">
+      <div class="card chart"><h3>Throughput</h3><div class="sub">requests per second, by concurrency</div>
+        ${barChart(res.map(r => ({ x: r.concurrency, y: r.req_per_s, label: r.req_per_s.toFixed(2), tip: tip(r) })), best?.concurrency)}</div>
+      <div class="card chart"><h3>Latency (p50)</h3><div class="sub">milliseconds per request, by concurrency</div>
+        ${barChart(res.map(r => ({ x: r.concurrency, y: r.p50_ms, label: String(r.p50_ms), tip: tip(r) })), best?.concurrency)}</div>
+    </div>
+    ${res.length ? `<div class="card"><table>
+      <thead><tr><th>Concurrency</th><th class="num">req/s</th><th class="num">questions/s</th><th class="num">speedup</th><th class="num">p50 ms</th><th class="num">p95 ms</th><th class="num">max ms</th><th class="num">requests</th><th class="num">errors</th></tr></thead>
+      <tbody>${res.map(r => `<tr><td>${r.concurrency}</td><td class="num">${r.req_per_s.toFixed(2)}</td><td class="num">${r.q_per_s.toFixed(2)}</td>
+        <td class="num">${base ? (r.req_per_s / base).toFixed(1) + "×" : "–"}</td><td class="num">${r.p50_ms}</td><td class="num">${r.p95_ms}</td><td class="num">${r.max_ms}</td>
+        <td class="num">${r.requests}</td><td class="num">${r.errors ? `<span class="a bad">${r.errors}</span>` : 0}</td></tr>`).join("")}</tbody></table></div>` : ""}`;
+  $("#main").onclick = e => {
+    if (e.target.id === "b-start") startBench();
+    if (e.target.id === "b-stop") { e.target.disabled = true; api("POST", "/api/bench/stop").then(pollBench); }
+  };
+  $("#main").oninput = $("#main").onchange = null;
+}
+
+// A single-series bar chart as inline SVG: one value per concurrency level, a direct label on the
+// highlighted (peak) level only, recessive grid, hover tooltips through #tip.
+function niceMax(v) { const p = 10 ** Math.floor(Math.log10(v)); return [1, 2, 2.5, 5, 10].map(m => m * p).find(m => m >= v); }
+function fmtTick(v) { return v >= 1000 ? (v / 1000).toFixed(v % 1000 ? 1 : 0) + "k" : +v.toFixed(2) + ""; }
+function barChart(points, highlight) {
+  if (!points.length) return `<div class="hint chartempty">Levels appear here as they finish.</div>`;
+  const W = 460, H = 220, L = 44, R = 8, T = 18, B = 36, pw = W - L - R, ph = H - T - B;
+  const max = niceMax(Math.max(...points.map(p => p.y)) || 1), y = v => T + ph - (v / max) * ph;
+  const slot = pw / points.length, bw = Math.min(44, slot * 0.62);
+  let g = [0, 0.25, 0.5, 0.75, 1].map(f => `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(f * max)}" y2="${y(f * max)}"/>
+    <text x="${L - 6}" y="${y(f * max) + 4}" text-anchor="end">${fmtTick(f * max)}</text>`).join("");
+  points.forEach((p, i) => {
+    const x0 = L + i * slot + (slot - bw) / 2, top = y(p.y), r = Math.min(4, bw / 2, Math.max(0, T + ph - top));
+    const d = `M${x0},${T + ph}V${top + r}Q${x0},${top} ${x0 + r},${top}H${x0 + bw - r}Q${x0 + bw},${top} ${x0 + bw},${top + r}V${T + ph}Z`;
+    g += `<rect class="hit" x="${L + i * slot}" y="${T}" width="${slot}" height="${ph}" data-tip="${esc(p.tip)}"/><path class="bar" d="${d}"/>
+      <text x="${x0 + bw / 2}" y="${T + ph + 15}" text-anchor="middle">${p.x}</text>`;
+    if (p.x === highlight) g += `<text class="val" x="${x0 + bw / 2}" y="${top - 5}" text-anchor="middle">${esc(p.label)}</text>`;
+  });
+  g += `<line class="base" x1="${L}" x2="${W - R}" y1="${T + ph}" y2="${T + ph}"/><text x="${L + pw / 2}" y="${H - 3}" text-anchor="middle">concurrency</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="bar chart by concurrency level">${g}</svg>`;
+}
+document.addEventListener("mousemove", e => {
+  const t = $("#tip"), el = e.target.closest?.("[data-tip]");
+  if (!el) { t.style.display = "none"; return; }
+  t.textContent = el.dataset.tip; t.style.display = "block";
+  const x = Math.min(e.clientX + 14, innerWidth - t.offsetWidth - 8), yy = Math.max(8, e.clientY - t.offsetHeight - 10);
+  t.style.left = x + "px"; t.style.top = yy + "px";
+});
 
 /* ---------- status, keys, boot ---------- */
 async function status() {

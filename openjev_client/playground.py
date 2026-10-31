@@ -11,6 +11,9 @@ Serves playground.html and a small JSON API:
     POST   /api/samples             save a new sample -> {id}
     PUT    /api/samples/<id>        overwrite a sample
     DELETE /api/samples/<id>
+    POST   /api/bench               {levels, duration, unique, ids?}: start a concurrency run (one at a time)
+    GET    /api/bench               its progress and per-level results
+    POST   /api/bench/stop
 
 Access: on 127.0.0.1 no token is needed. On any other address a token is required (given with
 --token or $PLAYGROUND_TOKEN, else generated and printed): open /?token=<token> once and a cookie
@@ -25,6 +28,7 @@ import json
 import secrets
 import socket
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -32,6 +36,7 @@ from typing import Iterable
 from urllib.parse import parse_qs, urlsplit
 
 from . import Jev, JevError
+from . import bench
 from . import samples as S
 
 PAGE = Path(__file__).with_name("playground.html")
@@ -87,6 +92,10 @@ class Handler(BaseHTTPRequestHandler):
     token = ""                 # empty: no token needed
     mode = "local"             # local | token | debug (shown in the page header)
     hosts: set = set(LOOPBACK)
+    # The one concurrency run this server may have going: shared by every page that's open.
+    bench_job: dict = {"running": False, "results": [], "live": {}, "levels": [], "error": ""}
+    bench_stop = threading.Event()
+    bench_lock = threading.Lock()
 
     def log_message(self, *a):
         pass
@@ -161,7 +170,43 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(200, {"ok": False, "error": str(e), **base})
         if path == "/api/samples":
             return self.send_json(200, S.list_samples(self.dir))
+        if path == "/api/bench":
+            with self.bench_lock:
+                job = dict(self.bench_job, live=dict(self.bench_job["live"]), results=list(self.bench_job["results"]))
+            return self.send_json(200, job)
         self.send_json(404, {"error": "not found"})
+
+    def start_bench(self, b: dict):
+        levels = [int(x) for x in b.get("levels") or bench.DEFAULT_LEVELS]
+        if not levels or len(levels) > 12 or any(not 1 <= c <= 64 for c in levels):
+            raise ValueError("levels: 1 to 12 concurrency values, each 1..64")
+        duration = float(b.get("duration", 10))
+        if not 2 <= duration <= 120:
+            raise ValueError("duration: 2..120 seconds per level")
+        ids = set(b.get("ids") or [])
+        work = [s for s in S.list_samples(self.dir) if "error" not in s and (not ids or s["id"] in ids)]
+        if not work:
+            raise ValueError("no samples to send")
+        unique = bool(b.get("unique", True))
+        job, stop = self.bench_job, self.bench_stop
+        with self.bench_lock:
+            if job["running"]:
+                return self.send_json(409, {"error": "a run is already going; stop it first"})
+            stop.clear()
+            job.update(running=True, results=[], live={}, levels=levels, duration=duration, unique=unique,
+                       samples=len(work), error="", started=time.time(), finished=None)
+
+        def go():
+            try:
+                bench.run(self.jev, work, levels, duration, unique, stop=stop, live=job["live"],
+                          progress=lambda r: job["results"].append(r))
+            except Exception as e:   # surfaced in the page, not swallowed
+                job["error"] = str(e)[:300]
+            finally:
+                job.update(running=False, finished=time.time(), stopped=stop.is_set())
+
+        threading.Thread(target=go, daemon=True).start()
+        self.send_json(200, {"ok": True})
 
     def do_POST(self):
         if not self.allowed():
@@ -173,6 +218,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(200, S.run(b, self.jev))
             if path == "/api/samples":
                 return self.send_json(200, {"id": S.save(b, d=self.dir)})
+            if path == "/api/bench":
+                return self.start_bench(b)
+            if path == "/api/bench/stop":
+                self.bench_stop.set()
+                return self.send_json(200, {"ok": True})
         except (ValueError, KeyError, TypeError) as e:
             return self.send_json(400, {"error": str(e)})
         except JevError as e:

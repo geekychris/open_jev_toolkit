@@ -3,6 +3,7 @@ import http.client
 import json
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -144,6 +145,35 @@ class Playground(unittest.TestCase):
         self.assertEqual(self.call("PUT", f"/api/samples/{sid}", dict(SAMPLE, notes="n"))[0], 200)
         self.assertEqual(json.loads(self.call("GET", "/api/samples")[1])[0]["notes"], "n")
         self.assertEqual(self.call("DELETE", f"/api/samples/{sid}")[0], 200)
+
+    def test_bench_run(self):
+        self.call("POST", "/api/samples", SAMPLE)
+        self.assertEqual(self.call("POST", "/api/bench", {"levels": [0]})[0], 400)
+        self.assertEqual(self.call("POST", "/api/bench", {"levels": [1], "duration": 500})[0], 400)
+        self.assertEqual(self.call("POST", "/api/bench", {"levels": [1, 2], "duration": 2})[0], 200)
+        self.assertEqual(self.call("POST", "/api/bench", {"levels": [1]})[0], 409)       # one run at a time
+        job = json.loads(self.call("GET", "/api/bench")[1])
+        self.assertTrue(job["running"])
+        self.assertEqual(job["levels"], [1, 2])
+        deadline = time.time() + 15
+        while job["running"] and time.time() < deadline:
+            time.sleep(0.2); job = json.loads(self.call("GET", "/api/bench")[1])
+        self.assertFalse(job["running"])
+        self.assertEqual([r["concurrency"] for r in job["results"]], [1, 2])
+        self.assertGreater(job["results"][0]["requests"], 0)
+        self.assertEqual(job["error"], "")
+        # stop ends a run early
+        self.call("POST", "/api/bench", {"levels": [1, 2, 4], "duration": 30})
+        time.sleep(0.5)
+        self.assertEqual(self.call("POST", "/api/bench/stop", {})[0], 200)
+        deadline = time.time() + 10
+        while json.loads(self.call("GET", "/api/bench")[1])["running"] and time.time() < deadline:
+            time.sleep(0.2)
+        job = json.loads(self.call("GET", "/api/bench")[1])
+        self.assertTrue(job["stopped"])
+        self.assertLess(len(job["results"]), 3)
+        for s in S.list_samples(playground.Handler.dir):
+            self.call("DELETE", f"/api/samples/{s['id']}")
 
     def test_guards(self):
         self.assertEqual(self.call("POST", "/api/samples", SAMPLE, headers={"Content-Type": "application/json"})[0], 403)

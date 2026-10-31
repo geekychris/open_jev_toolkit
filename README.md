@@ -297,9 +297,17 @@ the git checkout, so later deploys can update it. `OPENJEV_SAMPLES` changes that
 - **Save** (⌘S) writes `samples/<id>.json`; **Save as new** writes a copy; **Delete** removes the file.
 - **JSON** shows the whole sample for hand editing, copying, or pasting one in.
 - **Run all** runs every sample in the current (filtered) list and shows which expectations hold.
-  Click a row to open that sample.
+  The ×1 / ×2 / ×4 / ×6 selector next to it sets how many run at once (browsers allow about 6
+  connections to one server). Click a row to open that sample.
+- **Throughput test** ramps up concurrency (1, 2, 4, 8, 16, 32 by default; up to 64) over the samples
+  in the list and charts requests per second and p50 latency for each level as it finishes, with a
+  table of p95, max and errors. It runs on the playground server, not in the browser, so the browser's
+  connection limit doesn't cap it. One run at a time per playground; any open page sees its progress
+  and can stop it. Same measurement as [`openjev bench`](#performance-under-concurrency).
 
 ![Run all: every sample, with misses in red](docs/images/playground-run-all.png)
+
+![Throughput test against the DGX Spark: throughput peaks at concurrency 4 while latency keeps rising](docs/images/playground-throughput.png)
 
 ### Sample files
 
@@ -337,6 +345,7 @@ case that could reasonably go either way.
 
 ## Performance under concurrency
 
+The playground's **Throughput test** runs the same measurement and charts it. From the shell,
 `openjev bench` sends your saved samples at rising concurrency and reports throughput and latency
 at each level, so you can see where a server saturates:
 
