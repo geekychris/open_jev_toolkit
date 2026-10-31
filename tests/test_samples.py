@@ -1,4 +1,5 @@
 """Samples store, grading and the playground API (no model needed: a fake /v1/systemone)."""
+import http.client
 import json
 import tempfile
 import threading
@@ -114,6 +115,7 @@ class Playground(unittest.TestCase):
         cls.fake, url = start(FakeJev)
         cls.tmp = tempfile.TemporaryDirectory()
         playground.Handler.jev, playground.Handler.dir = Jev(url), Path(cls.tmp.name)
+        playground.Handler.token, playground.Handler.mode, playground.Handler.hosts = "", "local", set(playground.LOOPBACK)
         cls.srv, cls.url = start(playground.Handler)
 
     @classmethod
@@ -148,6 +150,53 @@ class Playground(unittest.TestCase):
         self.assertEqual(self.call("GET", "/", headers={"Host": "evil.example"})[0], 403)
         self.assertEqual(self.call("POST", "/api/samples", {"name": "x"})[0], 400)
         self.assertEqual(self.call("DELETE", "/api/samples/..%2Fx")[0], 404)
+
+
+class PlaygroundNetwork(unittest.TestCase):
+    """Token and debug modes, as when serving the LAN."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fake, url = start(FakeJev)
+        cls.tmp = tempfile.TemporaryDirectory()
+        playground.Handler.jev, playground.Handler.dir = Jev(url), Path(cls.tmp.name)
+        playground.Handler.hosts = set(playground.LOOPBACK) | {"box.example"}
+        cls.srv, cls.url = start(playground.Handler)
+
+    @classmethod
+    def tearDownClass(cls):
+        for s in (cls.srv, cls.fake): s.shutdown(); s.server_close()
+        cls.tmp.cleanup()
+        playground.Handler.token, playground.Handler.mode = "", "local"
+
+    def call(self, path, **headers):
+        conn = http.client.HTTPConnection("127.0.0.1", int(self.url.rsplit(":", 1)[1]))
+        conn.request("GET", path, headers={"Host": "box.example:3020", **headers})
+        r = conn.getresponse()
+        out = r.status, dict(r.getheaders()), r.read()
+        conn.close()
+        return out
+
+    def test_token_mode(self):
+        playground.Handler.token, playground.Handler.mode = "s3cret", "token"
+        code, _, page = self.call("/")
+        self.assertEqual(code, 401)
+        self.assertIn(b"needs its token", page)
+        self.assertEqual(self.call("/api/samples")[0], 401)
+        self.assertIn(b"not right", self.call("/?token=nope")[2])
+        code, hdrs, _ = self.call("/?token=s3cret")
+        self.assertEqual((code, hdrs["Location"]), (303, "/"))
+        self.assertIn("HttpOnly", hdrs["Set-Cookie"])
+        cookie = hdrs["Set-Cookie"].split(";")[0]
+        self.assertEqual(self.call("/api/samples", Cookie=cookie)[0], 200)
+        self.assertEqual(self.call("/api/samples", Authorization="Bearer s3cret")[0], 200)
+        self.assertEqual(json.loads(self.call("/api/status", Cookie=cookie)[2])["auth"], "token")
+
+    def test_debug_mode(self):
+        playground.Handler.token, playground.Handler.mode = "", "debug"
+        self.assertEqual(self.call("/api/samples")[0], 200)
+        self.assertEqual(json.loads(self.call("/api/status")[2])["auth"], "debug")
+        self.assertEqual(self.call("/", Host="evil.example")[0], 403)      # rebinding guard still on
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@
 
   openjev samples [--tag build]                 list saved samples
   openjev run [ID ...] [--tag build] [-v]       run samples, check expected answers (exit 1 on a miss)
-  openjev playground                            browser UI for trying questions and saving samples
+  openjev playground [--host 0.0.0.0 [--debug]]  browser UI for trying questions and saving samples
   openjev bench [ID ...] [--tag t] [--levels 1,2,4,8,16,32] [--duration 15] [--json out.json]
                                                 throughput and latency as concurrency rises
 
@@ -16,6 +16,7 @@ Samples live in $OPENJEV_SAMPLES (default: the toolkit's samples/); --samples ov
 """
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -73,8 +74,17 @@ def main(argv=None) -> int:
     p.add_argument("--duration", type=float, default=15, help="seconds per level (default 15)")
     p.add_argument("--reuse-cache", action="store_true", help="send samples unchanged, so a prefix cache can answer repeats")
     p.add_argument("--json", dest="json_out", metavar="FILE", help="also write the results as JSON")
-    p = sub.add_parser("playground")
-    p.add_argument("--port", type=int, default=3020); p.add_argument("--samples", help="samples directory")
+    env = os.environ.get
+    p = sub.add_parser("playground", help="browser UI; see openjev_client/playground.py for access modes")
+    p.add_argument("--port", type=int, default=int(env("PLAYGROUND_PORT", "3020")))
+    p.add_argument("--host", default=env("PLAYGROUND_HOST", "127.0.0.1"),
+                   help="bind address; anything but 127.0.0.1 needs a token unless --debug ($PLAYGROUND_HOST)")
+    p.add_argument("--token", default=env("PLAYGROUND_TOKEN", ""), help="token for network access ($PLAYGROUND_TOKEN; default: generated)")
+    p.add_argument("--debug", action="store_true", default=env("PLAYGROUND_DEBUG", "") in ("1", "true", "yes"),
+                   help="no token, even on the network ($PLAYGROUND_DEBUG=1)")
+    p.add_argument("--allow-host", action="append", default=[h for h in env("PLAYGROUND_ALLOW_HOSTS", "").split(",") if h],
+                   help="extra host name the page may be opened by, e.g. behind a proxy (repeatable)")
+    p.add_argument("--samples", help="samples directory")
     p.add_argument("--no-open", action="store_true", help="don't open a browser")
     a = ap.parse_args(argv)
 
@@ -102,7 +112,8 @@ def main(argv=None) -> int:
             return 0
         if a.cmd == "playground":
             from .playground import serve
-            serve(jev, Path(a.samples) if a.samples else S.default_dir(), a.port, open_browser=not a.no_open)
+            serve(jev, Path(a.samples) if a.samples else S.default_dir(), a.port, open_browser=not a.no_open,
+                  host=a.host, token=a.token, debug=a.debug, allow_hosts=a.allow_host)
             return 0
         if a.cmd == "version":
             print(json.dumps(jev.version(), indent=2)); return 0
