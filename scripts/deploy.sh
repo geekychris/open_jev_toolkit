@@ -15,6 +15,8 @@
 #   --ref REF       branch to deploy (default main)
 #   --dir DIR       checkout location on the host (default ~/open_jev_toolkit)
 #   --vllm-image I  NVIDIA: run vLLM from a Docker image
+#   --playground    also run the playground as a service on the network (port 3020, token required)
+#   --playground-debug  the same, with no token (anyone who can reach the port can use it)
 #   --no-service    install only; start it yourself with scripts/serve.sh start
 #
 # Example:
@@ -27,6 +29,7 @@ REPO_URL="${OPENJEV_REPO_URL:-https://github.com/geekychris/open_jev_toolkit.git
 # ~ expands on the remote host, not here.
 # shellcheck disable=SC2088
 DIR='~/open_jev_toolkit'
+PLAYGROUND=""
 REF=main; SERVICE=1; INSTALL_ARGS=(); PORT=3000; LISTEN=127.0.0.1
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -35,6 +38,8 @@ while [ $# -gt 0 ]; do
     --listen) LISTEN="$2"; INSTALL_ARGS+=(--listen "$2"); shift 2 ;;
     --ref) REF="$2"; shift 2 ;;
     --dir) DIR="$2"; shift 2 ;;
+    --playground) PLAYGROUND=token; shift ;;
+    --playground-debug) PLAYGROUND=debug; shift ;;
     --no-service) SERVICE=0; shift ;;
     *) echo "unknown option $1" >&2; exit 1 ;;
   esac
@@ -44,9 +49,9 @@ say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 say "deploying $REPO_URL@$REF to $TARGET:$DIR"
 
 # The remote side, as one script: arguments are passed as positional parameters, not interpolated.
-ssh -o BatchMode=yes "$TARGET" bash -s -- "$REPO_URL" "$REF" "$DIR" "$SERVICE" "${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"}" <<'REMOTE'
+ssh -o BatchMode=yes "$TARGET" bash -s -- "$REPO_URL" "$REF" "$DIR" "$SERVICE" "$PLAYGROUND" "${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"}" <<'REMOTE'
 set -euo pipefail
-REPO_URL="$1"; REF="$2"; DIR="${3/#\~/$HOME}"; SERVICE="$4"; shift 4
+REPO_URL="$1"; REF="$2"; DIR="${3/#\~/$HOME}"; SERVICE="$4"; PLAYGROUND="$5"; shift 5
 export PATH="$HOME/.local/bin:$PATH"
 if [ -d "$DIR/.git" ]; then
   echo "==> updating $DIR to $REF"
@@ -60,6 +65,10 @@ fi
 echo "==> $(git -C "$DIR" log --oneline -1)"
 "$DIR/scripts/install.sh" --no-check "$@"
 if [ "$SERVICE" = 1 ]; then "$DIR/scripts/service.sh" install; fi
+case "$PLAYGROUND" in
+  token) "$DIR/scripts/service.sh" playground install ;;
+  debug) "$DIR/scripts/service.sh" playground install --debug ;;
+esac
 REMOTE
 
 [ "$SERVICE" = 1 ] || { say "installed; on the host run: $DIR/scripts/serve.sh start"; exit 0; }
@@ -99,3 +108,14 @@ Use it from this machine:
 
 On the host: $DIR/scripts/service.sh status | logs | restart | stop
 EOF
+if [ -n "$PLAYGROUND" ]; then
+  PG_PORT=$(ssh -o BatchMode=yes "$TARGET" "grep '^PLAYGROUND_PORT=' $DIR/runtime/active.env | cut -d= -f2-")
+  PG_URL="http://${ADDR:-$HOST}:${PG_PORT:-3020}/"
+  echo
+  if [ "$PLAYGROUND" = debug ]; then
+    say "playground (debug mode, no token): $PG_URL"
+  else
+    say "playground: $PG_URL (token required; this prints the sign-in link):"
+    echo "    ssh $TARGET \"grep '^PLAYGROUND_TOKEN=' $DIR/runtime/active.env | sed 's|^PLAYGROUND_TOKEN=|$PG_URL?token=|'\""
+  fi
+fi

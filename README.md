@@ -155,7 +155,10 @@ scripts/deploy.sh chris@spark.local --profile 27b-fp8 --port 3030 --listen 0.0.0
 - `--port` picks the API port (3000 by default).
 - `--profile`, `--vllm-image`: as for `install.sh`. `--ref` deploys another branch; `--no-service`
   installs without starting.
-- Rerunning it updates the checkout and restarts the service; downloads already done are skipped.
+- `--playground` also runs the [playground](#open-it-from-other-machines) on the host as a service on
+  port 3020, with a token; `--playground-debug` runs it without one.
+- Rerunning it updates the checkout and restarts the service (on NVIDIA that reloads the model, a few
+  minutes); downloads already done are skipped.
 - It deploys what is pushed to GitHub, not uncommitted local changes.
 - It prints the host's IPv4 address as the URL. The helper listens on IPv4 only, and a name that also
   resolves to IPv6 (as `spark.local` does) makes Python clients try each IPv6 address first and wait
@@ -249,7 +252,33 @@ runtime/venv/bin/openjev playground         # serves http://127.0.0.1:3020 and o
 Options: `--port 3020`, `--samples DIR`, `--no-open`, and `--url` (before `playground`) for an OpenJev
 API somewhere other than `$OPENJEV_URL` / `http://127.0.0.1:3000`. The green dot in the header means
 the API is answering; if it's red, start it with `scripts/serve.sh start`. Stop the playground with
-Ctrl-C. It listens on 127.0.0.1 only.
+Ctrl-C.
+
+### Open it from other machines
+
+By default the playground listens on 127.0.0.1 only. `--host 0.0.0.0` serves the network:
+
+| mode | command | access |
+|---|---|---|
+| local | `openjev playground` | this machine only, no token |
+| token | `openjev playground --host 0.0.0.0` | a token is required: open `http://<host>:3020/?token=<token>` once and a cookie keeps that browser signed in (or send `Authorization: Bearer <token>`). The token comes from `--token` / `$PLAYGROUND_TOKEN`, or is generated and printed at start |
+| debug | `openjev playground --host 0.0.0.0 --debug` | no token: anyone who can reach the port can run questions and edit samples. The header shows a red **debug** badge |
+
+In every mode, the playground calls OpenJev itself (with `SHIM_TOKEN` when set), so the OpenJev API
+keeps its own token. The playground only answers requests addressed to its own host names and IP
+addresses, which blocks DNS rebinding; behind a proxy or another DNS name, add `--allow-host NAME`.
+
+To keep it running on a server, install it as a second service next to OpenJev:
+
+```bash
+scripts/service.sh playground install            # 0.0.0.0:3020, token (saved as PLAYGROUND_TOKEN)
+scripts/service.sh playground install --debug    # no token
+scripts/service.sh playground status | logs | restart | stop | uninstall
+```
+
+or add `--playground` / `--playground-debug` to `scripts/deploy.sh`. On a server, samples saved
+through the playground go to `runtime/samples` (seeded from `samples/` on first install), outside
+the git checkout, so later deploys can update it. `OPENJEV_SAMPLES` changes that.
 
 ### Use it
 
