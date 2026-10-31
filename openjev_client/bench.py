@@ -38,14 +38,19 @@ def _pct(sorted_vals: list, p: float) -> float:
     return sorted_vals[i]
 
 
-def run_level(jev: Jev, workload: list, concurrency: int, duration: float, unique: bool, counter) -> dict:
-    """`concurrency` workers send requests back to back until `duration` seconds have passed."""
+def run_level(jev: Jev, workload: list, concurrency: int, duration: float, unique: bool, counter,
+              stop: threading.Event = None, live: dict = None) -> dict:
+    """`concurrency` workers send requests back to back until `duration` seconds have passed (or
+    `stop` is set). `live`, if given, is updated as requests complete: {"done", "errors"}."""
     lat, questions, errors = [], [0], []
     lock = threading.Lock()
     deadline = time.perf_counter() + duration
+    stop = stop or threading.Event()
+    live = live if live is not None else {}
+    live.update(concurrency=concurrency, done=0, errors=0, started=time.time(), duration=duration)
 
     def worker():
-        while time.perf_counter() < deadline:
+        while time.perf_counter() < deadline and not stop.is_set():
             n = next(counter)
             sample = workload[n % len(workload)]
             state = _unique(sample["state"], n) if unique else sample["state"]
@@ -54,10 +59,10 @@ def run_level(jev: Jev, workload: list, concurrency: int, duration: float, uniqu
                 jev.ask(state, **sample["questions"])
                 ms = (time.perf_counter() - t0) * 1000
                 with lock:
-                    lat.append(ms); questions[0] += len(sample["questions"])
+                    lat.append(ms); questions[0] += len(sample["questions"]); live["done"] = len(lat)
             except (JevError, OSError) as e:
                 with lock:
-                    errors.append(str(e)[:120])
+                    errors.append(str(e)[:120]); live["errors"] = len(errors)
 
     t0 = time.perf_counter()
     threads = [threading.Thread(target=worker, daemon=True) for _ in range(concurrency)]
@@ -77,7 +82,7 @@ def run_level(jev: Jev, workload: list, concurrency: int, duration: float, uniqu
 
 
 def run(jev: Jev, workload: list, levels=DEFAULT_LEVELS, duration: float = 15.0, unique: bool = True,
-        progress=None, stop_error_rate: float = 0.5) -> list:
+        progress=None, stop_error_rate: float = 0.5, stop: threading.Event = None, live: dict = None) -> list:
     if not workload:
         raise ValueError("no samples to send")
     counter = itertools.count()
@@ -85,7 +90,9 @@ def run(jev: Jev, workload: list, levels=DEFAULT_LEVELS, duration: float = 15.0,
     jev.ask(_unique(workload[0]["state"], -1) if unique else workload[0]["state"], **workload[0]["questions"])
     results = []
     for c in levels:
-        r = run_level(jev, workload, c, duration, unique, counter)
+        if stop is not None and stop.is_set():
+            break
+        r = run_level(jev, workload, c, duration, unique, counter, stop, live)
         results.append(r)
         if progress:
             progress(r)
