@@ -109,9 +109,14 @@ The image is remembered in `runtime/active.env`; `VLLM_IMAGE=...` overrides it p
 **DGX Spark** (GB10, 128 GB unified memory, arm64). The installer sees that the GPU shares system
 memory (`nvidia-smi` reports no separate GPU memory) and:
 - defaults to `27b-fp8` (about 28 GB of FP8 weights in memory);
-- gives vLLM 60% of memory (`--gpu-memory-utilization 0.60`) instead of upstream's 0.90, which on a
-  unified-memory machine would leave too little for the OS and anything else you run. This only sizes
-  vLLM's KV cache; answers are unaffected. Set `VLLM_GPU_MEM` to change it.
+- sizes vLLM's share at each start from the memory available then: available minus 12 GB headroom,
+  capped at 60%, instead of upstream's 0.90 (which would leave nothing for the OS or other models
+  running beside it). It refuses to start, with a clear message, if that is less than the profile
+  needs (about 40 GB for `27b-fp8`, 16 GB for `flash-fp8`). This only sizes vLLM's KV cache; answers
+  are unaffected. `VLLM_GPU_MEM` fixes the share, `VLLM_HEADROOM_GB` changes the headroom;
+- frees reclaimable page cache before starting vLLM. On GB10, CUDA counts only free pages as free
+  memory, not file cache, and vLLM won't start if its share is more than that. The script allocates
+  memory briefly so the kernel drops clean cache pages (the effect of `drop_caches`, without root).
 
 If the pip install of vLLM fails on Spark's arm64 + CUDA 13, use `--vllm-image` with NVIDIA's vLLM
 container for Spark from NGC (`nvcr.io/nvidia/vllm`), or `vllm/vllm-openai:v0.29.0` if it has an arm64
@@ -120,13 +125,62 @@ build.
 Other settings (all optional):
 - `OPENJEV_VLLM_PORT` (8000): vLLM's port. It is always bound to 127.0.0.1 and has no API key; expose
   only the helper, with `SHIM_TOKEN` set.
-- `VLLM_GPU_MEM`: vLLM's memory share (0.90; 0.60 on unified memory).
+- `VLLM_GPU_MEM`: vLLM's memory share (0.90; sized from available memory on unified memory).
 - `VLLM_TIMEOUT` (1200): seconds to wait for vLLM to come up.
 - `VLLM_EXTRA_ARGS`: extra `vllm serve` flags, for troubleshooting. Anything beyond the memory share
   moves you off the measured setup.
 
-Status: the scripts follow upstream's NVIDIA instructions and have been exercised against a simulated
-GPU (fake `nvidia-smi` and vLLM, real helper). They have not yet been run end to end on NVIDIA hardware.
+Tested on a DGX Spark (GB10, 128 GB, driver 580 / CUDA 13) running `27b-fp8` beside another 47 GB
+model: vLLM 0.29.0 installs from pip on arm64, the first start takes about 11 minutes (5 loading
+weights, the rest compiling and capturing CUDA graphs), and vLLM uses 29 GB for weights plus a
+15.5 GB KV cache. The saved samples match 40 of 41 expectations, the same as `27b-8bit` on MLX, at
+0.15 s for one question and 0.2–0.4 s for three, measured on the Spark (about 4–6× the M4 Max).
+
+The installer builds the venv on uv's own Python 3.12: Triton compiles a small C helper when vLLM
+starts and needs `Python.h`, which Ubuntu's Python lacks unless `python3.12-dev` is installed.
+
+## Deploy to another machine
+
+`scripts/deploy.sh` sets the toolkit up on another machine over SSH and runs it there as a service.
+It clones (or updates) the repo from GitHub on the host, runs the installer, installs a systemd user
+service, waits until the API answers, and checks it from your machine:
+
+```bash
+scripts/deploy.sh chris@spark.local --profile 27b-fp8 --port 3030 --listen 0.0.0.0
+```
+
+- `--listen 0.0.0.0` serves the LAN and generates a bearer token, saved on the host in
+  `runtime/active.env` (mode 600). Without `--listen` it stays on the host's localhost and the script
+  prints the SSH tunnel to use. vLLM itself is always localhost-only.
+- `--port` picks the API port (3000 by default).
+- `--profile`, `--vllm-image`: as for `install.sh`. `--ref` deploys another branch; `--no-service`
+  installs without starting.
+- `--playground` also runs the [playground](#open-it-from-other-machines) on the host as a service on
+  port 3020, with a token; `--playground-debug` runs it without one.
+- Rerunning it updates the checkout and restarts the service (on NVIDIA that reloads the model, a few
+  minutes); downloads already done are skipped.
+- It deploys what is pushed to GitHub, not uncommitted local changes.
+- It prints the host's IPv4 address as the URL. The helper listens on IPv4 only, and a name that also
+  resolves to IPv6 (as `spark.local` does) makes Python clients try each IPv6 address first and wait
+  for the refusal, about a second apiece, on every request.
+
+Then, from your machine:
+
+```bash
+export OPENJEV_URL=http://192.168.1.227:3030    # the address deploy.sh printed
+export SHIM_TOKEN=$(ssh chris@spark.local "grep '^SHIM_TOKEN=' ~/open_jev_toolkit/runtime/active.env | cut -d= -f2-")
+runtime/venv/bin/openjev version
+runtime/venv/bin/openjev run            # the saved samples, against the remote model
+runtime/venv/bin/openjev playground     # the playground, against the remote model
+```
+
+On the host, `scripts/service.sh status | logs | restart | stop | uninstall` manages the service
+(`logs` follows the helper; vLLM's log is `runtime/vllm.log`). The service starts at boot only if
+your user lingers: `service.sh install` enables that when it can, and otherwise asks you to run
+`sudo loginctl enable-linger $USER` once.
+
+The installer's `--port` and `--listen` options (and `SHIM_TOKEN`) are saved in `runtime/active.env`,
+so `serve.sh` and the service use them without extra flags; environment variables still override them.
 
 ## Use it
 
@@ -198,7 +252,33 @@ runtime/venv/bin/openjev playground         # serves http://127.0.0.1:3020 and o
 Options: `--port 3020`, `--samples DIR`, `--no-open`, and `--url` (before `playground`) for an OpenJev
 API somewhere other than `$OPENJEV_URL` / `http://127.0.0.1:3000`. The green dot in the header means
 the API is answering; if it's red, start it with `scripts/serve.sh start`. Stop the playground with
-Ctrl-C. It listens on 127.0.0.1 only.
+Ctrl-C.
+
+### Open it from other machines
+
+By default the playground listens on 127.0.0.1 only. `--host 0.0.0.0` serves the network:
+
+| mode | command | access |
+|---|---|---|
+| local | `openjev playground` | this machine only, no token |
+| token | `openjev playground --host 0.0.0.0` | a token is required: open `http://<host>:3020/?token=<token>` once and a cookie keeps that browser signed in (or send `Authorization: Bearer <token>`). The token comes from `--token` / `$PLAYGROUND_TOKEN`, or is generated and printed at start |
+| debug | `openjev playground --host 0.0.0.0 --debug` | no token: anyone who can reach the port can run questions and edit samples. The header shows a red **debug** badge |
+
+In every mode, the playground calls OpenJev itself (with `SHIM_TOKEN` when set), so the OpenJev API
+keeps its own token. The playground only answers requests addressed to its own host names and IP
+addresses, which blocks DNS rebinding; behind a proxy or another DNS name, add `--allow-host NAME`.
+
+To keep it running on a server, install it as a second service next to OpenJev:
+
+```bash
+scripts/service.sh playground install            # 0.0.0.0:3020, token (saved as PLAYGROUND_TOKEN)
+scripts/service.sh playground install --debug    # no token
+scripts/service.sh playground status | logs | restart | stop | uninstall
+```
+
+or add `--playground` / `--playground-debug` to `scripts/deploy.sh`. On a server, samples saved
+through the playground go to `runtime/samples` (seeded from `samples/` on first install), outside
+the git checkout, so later deploys can update it. `OPENJEV_SAMPLES` changes that.
 
 ### Use it
 
