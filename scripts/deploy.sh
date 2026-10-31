@@ -72,17 +72,28 @@ if [ "$LISTEN" = 127.0.0.1 ] || [ "$LISTEN" = localhost ]; then
   exit 0
 fi
 
+# The helper listens on IPv4 only. A name that also resolves to IPv6 (spark.local does) makes Python
+# clients try the IPv6 addresses first and wait for each refusal, about a second apiece, on every
+# request. So hand out the host's IPv4 address when it answers.
+ADDR=$(ssh -o BatchMode=yes "$TARGET" "hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+(\.[0-9]+){3}\$' | head -1" || true)
+
 # Check the API across the network with the token, without printing the token.
 TOKEN=$(ssh -o BatchMode=yes "$TARGET" "grep '^SHIM_TOKEN=' $DIR/runtime/active.env | cut -d= -f2-")
-if curl -fs -m 10 -H "Authorization: Bearer $TOKEN" "http://$HOST:$PORT/v1/version" >/dev/null; then
-  say "reachable from here: http://$HOST:$PORT/v1/systemone (bearer token required)"
+URL=""
+for h in ${ADDR:+"$ADDR"} "$HOST"; do
+  if curl -fs -m 10 -H "Authorization: Bearer $TOKEN" "http://$h:$PORT/v1/version" >/dev/null; then URL="http://$h:$PORT"; break; fi
+done
+if [ -n "$URL" ]; then
+  say "reachable from here: $URL/v1/systemone (bearer token required)"
+  [ "$URL" = "http://$HOST:$PORT" ] || say "(http://$HOST:$PORT works too, but if $HOST resolves to IPv6 as well, Python clients pay ~1 s per IPv6 address on every request)"
 else
-  say "the service is up on $HOST, but http://$HOST:$PORT is not reachable from here (firewall?)"
+  URL="http://$HOST:$PORT"
+  say "the service is up on $HOST, but $URL is not reachable from here (firewall?)"
 fi
 cat <<EOF
 
 Use it from this machine:
-    export OPENJEV_URL=http://$HOST:$PORT
+    export OPENJEV_URL=$URL
     export SHIM_TOKEN=\$(ssh $TARGET "grep '^SHIM_TOKEN=' $DIR/runtime/active.env | cut -d= -f2-")
     runtime/venv/bin/openjev version
 

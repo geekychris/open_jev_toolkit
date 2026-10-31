@@ -130,8 +130,14 @@ Other settings (all optional):
 - `VLLM_EXTRA_ARGS`: extra `vllm serve` flags, for troubleshooting. Anything beyond the memory share
   moves you off the measured setup.
 
-Status: the scripts follow upstream's NVIDIA instructions and have been exercised against a simulated
-GPU (fake `nvidia-smi` and vLLM, real helper). They have not yet been run end to end on NVIDIA hardware.
+Tested on a DGX Spark (GB10, 128 GB, driver 580 / CUDA 13) running `27b-fp8` beside another 47 GB
+model: vLLM 0.29.0 installs from pip on arm64, the first start takes about 11 minutes (5 loading
+weights, the rest compiling and capturing CUDA graphs), and vLLM uses 29 GB for weights plus a
+15.5 GB KV cache. The saved samples match 40 of 41 expectations, the same as `27b-8bit` on MLX, at
+0.15 s for one question and 0.2–0.4 s for three, measured on the Spark (about 4–6× the M4 Max).
+
+The installer builds the venv on uv's own Python 3.12: Triton compiles a small C helper when vLLM
+starts and needs `Python.h`, which Ubuntu's Python lacks unless `python3.12-dev` is installed.
 
 ## Deploy to another machine
 
@@ -151,11 +157,14 @@ scripts/deploy.sh chris@spark.local --profile 27b-fp8 --port 3030 --listen 0.0.0
   installs without starting.
 - Rerunning it updates the checkout and restarts the service; downloads already done are skipped.
 - It deploys what is pushed to GitHub, not uncommitted local changes.
+- It prints the host's IPv4 address as the URL. The helper listens on IPv4 only, and a name that also
+  resolves to IPv6 (as `spark.local` does) makes Python clients try each IPv6 address first and wait
+  for the refusal, about a second apiece, on every request.
 
 Then, from your machine:
 
 ```bash
-export OPENJEV_URL=http://spark.local:3030
+export OPENJEV_URL=http://192.168.1.227:3030    # the address deploy.sh printed
 export SHIM_TOKEN=$(ssh chris@spark.local "grep '^SHIM_TOKEN=' ~/open_jev_toolkit/runtime/active.env | cut -d= -f2-")
 runtime/venv/bin/openjev version
 runtime/venv/bin/openjev run            # the saved samples, against the remote model
