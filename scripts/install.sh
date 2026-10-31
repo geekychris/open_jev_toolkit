@@ -64,7 +64,7 @@ MEM=$(model_mem_gb)
 if [ "$PLATFORM" = cuda ]; then
   GPU=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
   say "profile $PROFILE: $MODEL_REPO (~${SIZE_GB} GB download, FP8 on load); GPU: ${GPU:-unknown}, ${MEM} GB for the model"
-  [ -n "$(gpu_mem_gb)" ] || say "unified memory (e.g. DGX Spark): vLLM will take ${VLLM_GPU_MEM:-0.60} of system memory"
+  [ -n "$(gpu_mem_gb)" ] || say "unified memory (e.g. DGX Spark): vLLM's share is sized at each start from the memory available then"
 else
   say "profile $PROFILE: $MODEL_REPO (~${SIZE_GB} GB), this Mac has ${MEM} GB"
 fi

@@ -106,29 +106,36 @@ size_vllm_memory() {
 }
 
 # On unified memory CUDA counts only free pages, not reclaimable file cache, and vLLM refuses to
-# start when its share exceeds CUDA's free figure. Allocating memory briefly makes the kernel drop
-# clean cache pages (the same effect as drop_caches, without root).
+# start when its share exceeds CUDA's free figure. Holding memory briefly makes the kernel drop clean
+# cache pages to make room, and that memory stays free once released (the effect of drop_caches,
+# without root). The amount is fixed up front (the shortfall, never more than available minus 8 GB),
+# so other processes are not pushed into swap.
 reclaim_cache() {
   [ "$UNIFIED" = 1 ] || return 0
-  local want free
+  local want free grab limit
   want=$(awk -v g="$VLLM_GPU_MEM" -v t="$(meminfo_gb MemTotal)" 'BEGIN{printf "%d", g*t + 3}')
   free=$(meminfo_gb MemFree)
   [ "$free" -ge "$want" ] && return 0
-  say "freeing page cache: ${free} GB free, vLLM needs ${want} GB"
-  "$PY" - "$want" <<'EOF'
+  grab=$(( want - free + 2 )); limit=$(( $(meminfo_gb MemAvailable) - 8 ))
+  if [ "$grab" -gt "$limit" ]; then grab=$limit; fi
+  [ "$grab" -gt 0 ] || return 0
+  say "freeing page cache: ${free} GB free, vLLM needs ${want} GB; holding ${grab} GB briefly"
+  "$PY" - "$grab" <<'EOF'
 import sys
-want = int(sys.argv[1])
-def gb(k):
+def available_gb():
     for line in open("/proc/meminfo"):
-        if line.startswith(k + ":"):
+        if line.startswith("MemAvailable:"):
             return int(line.split()[1]) // 1048576
 hold = []
-# Grow in 1 GB steps until enough is free; stop well short of what is available so nothing is pushed to swap.
-while gb("MemFree") < want and gb("MemAvailable") > 6:
+for _ in range(int(sys.argv[1])):
+    if available_gb() < 6:   # safety stop if something else grew meanwhile
+        break
     hold.append(bytearray(1 << 30))
 del hold
 EOF
-  say "now $(meminfo_gb MemFree) GB free"
+  free=$(meminfo_gb MemFree)
+  if [ "$free" -ge "$want" ]; then say "now ${free} GB free"
+  else warn "only ${free} GB free after freeing cache (vLLM wants ${want} GB); it may refuse to start"; fi
 }
 
 start_vllm() {

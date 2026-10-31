@@ -109,9 +109,14 @@ The image is remembered in `runtime/active.env`; `VLLM_IMAGE=...` overrides it p
 **DGX Spark** (GB10, 128 GB unified memory, arm64). The installer sees that the GPU shares system
 memory (`nvidia-smi` reports no separate GPU memory) and:
 - defaults to `27b-fp8` (about 28 GB of FP8 weights in memory);
-- gives vLLM 60% of memory (`--gpu-memory-utilization 0.60`) instead of upstream's 0.90, which on a
-  unified-memory machine would leave too little for the OS and anything else you run. This only sizes
-  vLLM's KV cache; answers are unaffected. Set `VLLM_GPU_MEM` to change it.
+- sizes vLLM's share at each start from the memory available then: available minus 12 GB headroom,
+  capped at 60%, instead of upstream's 0.90 (which would leave nothing for the OS or other models
+  running beside it). It refuses to start, with a clear message, if that is less than the profile
+  needs (about 40 GB for `27b-fp8`, 16 GB for `flash-fp8`). This only sizes vLLM's KV cache; answers
+  are unaffected. `VLLM_GPU_MEM` fixes the share, `VLLM_HEADROOM_GB` changes the headroom;
+- frees reclaimable page cache before starting vLLM. On GB10, CUDA counts only free pages as free
+  memory, not file cache, and vLLM won't start if its share is more than that. The script allocates
+  memory briefly so the kernel drops clean cache pages (the effect of `drop_caches`, without root).
 
 If the pip install of vLLM fails on Spark's arm64 + CUDA 13, use `--vllm-image` with NVIDIA's vLLM
 container for Spark from NGC (`nvcr.io/nvidia/vllm`), or `vllm/vllm-openai:v0.29.0` if it has an arm64
@@ -120,13 +125,50 @@ build.
 Other settings (all optional):
 - `OPENJEV_VLLM_PORT` (8000): vLLM's port. It is always bound to 127.0.0.1 and has no API key; expose
   only the helper, with `SHIM_TOKEN` set.
-- `VLLM_GPU_MEM`: vLLM's memory share (0.90; 0.60 on unified memory).
+- `VLLM_GPU_MEM`: vLLM's memory share (0.90; sized from available memory on unified memory).
 - `VLLM_TIMEOUT` (1200): seconds to wait for vLLM to come up.
 - `VLLM_EXTRA_ARGS`: extra `vllm serve` flags, for troubleshooting. Anything beyond the memory share
   moves you off the measured setup.
 
 Status: the scripts follow upstream's NVIDIA instructions and have been exercised against a simulated
 GPU (fake `nvidia-smi` and vLLM, real helper). They have not yet been run end to end on NVIDIA hardware.
+
+## Deploy to another machine
+
+`scripts/deploy.sh` sets the toolkit up on another machine over SSH and runs it there as a service.
+It clones (or updates) the repo from GitHub on the host, runs the installer, installs a systemd user
+service, waits until the API answers, and checks it from your machine:
+
+```bash
+scripts/deploy.sh chris@spark.local --profile 27b-fp8 --port 3030 --listen 0.0.0.0
+```
+
+- `--listen 0.0.0.0` serves the LAN and generates a bearer token, saved on the host in
+  `runtime/active.env` (mode 600). Without `--listen` it stays on the host's localhost and the script
+  prints the SSH tunnel to use. vLLM itself is always localhost-only.
+- `--port` picks the API port (3000 by default).
+- `--profile`, `--vllm-image`: as for `install.sh`. `--ref` deploys another branch; `--no-service`
+  installs without starting.
+- Rerunning it updates the checkout and restarts the service; downloads already done are skipped.
+- It deploys what is pushed to GitHub, not uncommitted local changes.
+
+Then, from your machine:
+
+```bash
+export OPENJEV_URL=http://spark.local:3030
+export SHIM_TOKEN=$(ssh chris@spark.local "grep '^SHIM_TOKEN=' ~/open_jev_toolkit/runtime/active.env | cut -d= -f2-")
+runtime/venv/bin/openjev version
+runtime/venv/bin/openjev run            # the saved samples, against the remote model
+runtime/venv/bin/openjev playground     # the playground, against the remote model
+```
+
+On the host, `scripts/service.sh status | logs | restart | stop | uninstall` manages the service
+(`logs` follows the helper; vLLM's log is `runtime/vllm.log`). The service starts at boot only if
+your user lingers: `service.sh install` enables that when it can, and otherwise asks you to run
+`sudo loginctl enable-linger $USER` once.
+
+The installer's `--port` and `--listen` options (and `SHIM_TOKEN`) are saved in `runtime/active.env`,
+so `serve.sh` and the service use them without extra flags; environment variables still override them.
 
 ## Use it
 
